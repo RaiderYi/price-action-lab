@@ -126,15 +126,18 @@ class TestReleaseGate:
 
     def test_below_threshold_fail(self):
         v = release_gate(GOOD_PLAN, {"cost_adjusted_daily_excess_mean": 0.0001},
-                         n_samples=150)
+                         n_samples=150, ci_lower=0.00005,
+                         realized_max_drawdown=0.05, g0_engineering_passed=True)
         assert v == Verdict.FAIL
 
     def test_ci_lower_nonpositive_inconclusive(self):
         v = release_gate(GOOD_PLAN, {"cost_adjusted_daily_excess_mean": 0.001},
-                         n_samples=150, ci_lower=-0.0001)
+                         n_samples=150, ci_lower=-0.0001,
+                         g0_engineering_passed=True)
         assert v == Verdict.INCONCLUSIVE
 
     def test_full_pass(self):
         v = release_gate(GOOD_PLAN, {"cost_adjusted_daily_excess_mean": 0.001},
-                         n_samples=150, ci_lower=0.0005)
+                         n_samples=150, ci_lower=0.0005,
+                         realized_max_drawdown=0.05, g0_engineering_passed=True)
         assert v == Verdict.PASS

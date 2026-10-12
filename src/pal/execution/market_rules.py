@@ -110,6 +110,8 @@ class Order:
     state: OrderState = OrderState.INTENT
     filled_qty: int = 0
     avg_fill_price: float = 0.0
+    fill_ids: set = None        # R06：fill 幂等
+    last_event_at: Optional[str] = None   # R06：事件时间
 
     def __post_init__(self):
         if self.side not in ("buy", "sell"):
@@ -118,6 +120,8 @@ class Order:
             raise DomainValidationError(f"order_type 非法: {self.order_type}")
         if self.qty <= 0:
             raise DomainValidationError("qty 必须为正")
+        # dataclass 默认值陷阱：可变默认共享
+        self.fill_ids = self.fill_ids if self.fill_ids is not None else set()
 
     def transition(self, new_state: OrderState) -> None:
         if new_state not in _ORDER_TRANSITIONS[self.state]:
@@ -125,10 +129,24 @@ class Order:
                 f"{self.order_id}: 非法订单跃迁 {self.state.value}→{new_state.value}")
         self.state = new_state
 
-    def apply_fill(self, qty: int, price: float) -> None:
-        """部分/全部成交累计（加权均价）。"""
+    def apply_fill(self, qty: int, price: float,
+                   fill_id: str = "",
+                   event_at: str = "") -> None:
+        """部分/全部成交累计（R06：终态保护 + fill 幂等 + 事件时间）。
+
+        只有 SUBMITTED / PARTIALLY_FILLED 可成交；CANCELLED/REJECTED/
+        INTENT/FILLED 一律拒绝（无时序复活）。
+        """
         if qty <= 0 or price <= 0:
             raise DomainValidationError("成交数量/价格非法")
+        if self.state not in (OrderState.SUBMITTED, OrderState.PARTIALLY_FILLED):
+            raise DomainValidationError(
+                f"{self.order_id}: 状态 {self.state.value} 不可成交"
+                f"（终态/未提交订单复活被禁止，R06）")
+        if fill_id:
+            if fill_id in self.fill_ids:
+                return           # 幂等：重复 fill 事件不重复记账
+            self.fill_ids.add(fill_id)
         if self.filled_qty + qty > self.qty:
             raise DomainValidationError(
                 f"超量成交: {self.filled_qty}+{qty} > {self.qty}")
@@ -136,6 +154,8 @@ class Order:
         self.avg_fill_price = (
             (self.avg_fill_price * self.filled_qty + price * qty) / total)
         self.filled_qty = total
+        if event_at:
+            self.last_event_at = event_at
         self.state = (OrderState.FILLED if self.filled_qty == self.qty
                       else OrderState.PARTIALLY_FILLED)
 

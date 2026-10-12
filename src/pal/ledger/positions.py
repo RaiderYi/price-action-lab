@@ -112,6 +112,11 @@ class AccountLedger:
             t1_next_trading_day: date) -> None:
         if qty <= 0 or price <= 0:
             raise DomainValidationError("买入参数非法")
+        # R10：T+1 边界强制——sellable_from 必须 > 买入日
+        if t1_next_trading_day <= trade_date:
+            raise DomainValidationError(
+                f"非法 sellable_from({t1_next_trading_day}) ≤ 买入日"
+                f"({trade_date})：T+1 约束由账本强制（R10）")
         gross = qty * price
         commission = max(gross * rules.commission_bps / 10000, rules.min_commission)
         total_cost = gross + commission

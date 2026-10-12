@@ -51,10 +51,12 @@ class PortfolioConstraints:
                       instrument_value: float,
                       industry_value: float,
                       fee_estimate_pct: float = 0.001,
-                      lot_size: int = 100) -> RiskDecision:
-        """风险金额定仓：qty 受风险预算和资金双重上限（S6-01）。
+                      lot_size: int = 100,
+                      pending_instrument_orders_value: float = 0.0,
+                      ) -> RiskDecision:
+        """风险金额定仓（R07 修正：单票上限扣除已有持仓与在途买单）。
 
-        极窄止损不能放大为不合理满仓——风险预算先算，再过资金/集中度闸。
+        新增额度 = max(0, NAV×单票上限 − 已有持仓市值 − 在途买单占用)。
         """
         if nav <= 0 or cash < 0:
             raise DomainValidationError("NAV/现金非法")
@@ -63,10 +65,12 @@ class PortfolioConstraints:
                                 0.0, positions_value, positions_value, cash)
         risk_budget = nav * self.p.risk_per_trade_pct
         per_share_risk = entry - stop
-        # 极窄止损上限：单票市值占比封顶（防窄止损满仓）
         qty_by_risk = int(risk_budget / (per_share_risk * (1 + fee_estimate_pct)))
-        budget_cap_value = nav * self.p.max_position_pct
-        qty_by_pos_cap = int(budget_cap_value / entry)
+        # R07：单票上限扣已有+在途
+        position_cap_value = max(
+            0.0, nav * self.p.max_position_pct
+            - instrument_value - pending_instrument_orders_value)
+        qty_by_pos_cap = int(position_cap_value / entry)
         qty_by_cash = int(cash * (1 - fee_estimate_pct) / entry)
         qty = min(qty_by_risk, qty_by_pos_cap, qty_by_cash)
 

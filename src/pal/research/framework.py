@@ -203,26 +203,44 @@ class ExperimentResult:
 
 
 def release_gate(plan: PreregisteredPlan, result_metrics: Dict[str, float],
-                 n_samples: int, ci_lower: Optional[float] = None) -> Verdict:
-    """G1/G2 裁决（S7-08）。
+                 n_samples: int, ci_lower: Optional[float] = None,
+                 realized_max_drawdown: Optional[float] = None,
+                 g0_engineering_passed: bool = False) -> Verdict:
+    """G0-G2 裁决（R08 修正：缺CI/超回撤/NaN 一律不得 PASS）。
 
-    - 计划不完整 → INCONCLUSIVE（不是 FAIL）
-    - 样本 < planned_sample → INCONCLUSIVE
-    - 主指标 < 阈值 → FAIL
-    - CI 下界 <= 0 → INCONCLUSIVE（统计不可信，扩样本）
-    - 全过 → PASS
+    顺序：
+    1. 计划不完整 / G0 未过 / 关键证据缺失（含 ci_lower=None）→ INCONCLUSIVE
+    2. NaN/inf 指标 → INCONCLUSIVE（数值未定义，不可比较）
+    3. 主指标 < 阈值 → FAIL；回撤超容忍 → FAIL
+    4. CI 下界 <= 0 → INCONCLUSIVE（统计不足）
+    5. 全过 → PASS
     """
+    import math
+
     try:
         validate_plan(plan)
     except PlanIncompleteError:
         return Verdict.INCONCLUSIVE
+    # G0：工程证据（R08）
+    if not g0_engineering_passed:
+        return Verdict.INCONCLUSIVE
     if n_samples < (plan.planned_sample or 0):
         return Verdict.INCONCLUSIVE
     pm = result_metrics.get(plan.primary_metric)
-    if pm is None:
+    # R08：关键指标必须存在且有限
+    if pm is None or not math.isfinite(pm):
         return Verdict.INCONCLUSIVE
+    if ci_lower is None or not math.isfinite(ci_lower):
+        return Verdict.INCONCLUSIVE       # 缺置信区间不得 PASS
     if pm < (plan.min_economic_threshold or 0.0):
         return Verdict.FAIL
-    if ci_lower is not None and ci_lower <= 0:
+    # R08：回撤容忍参与判定
+    if realized_max_drawdown is not None:
+        if not math.isfinite(realized_max_drawdown):
+            return Verdict.INCONCLUSIVE
+        if (plan.max_drawdown_tolerance is not None
+                and realized_max_drawdown > plan.max_drawdown_tolerance):
+            return Verdict.FAIL
+    if ci_lower <= 0:
         return Verdict.INCONCLUSIVE
     return Verdict.PASS
