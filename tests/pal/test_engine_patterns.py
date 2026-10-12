@@ -57,12 +57,18 @@ class TestBreakoutStrengthConvergence:
         assert s.level == "weak"
 
     def test_big_bar_with_follow_strong(self):
+        """R05 后语义：跟随需信号棒之后的完成棒（assess_with_follow_bars）。"""
+        from pal.signals.breakout import assess_with_follow_bars
         bars = [bar30(i, o=10.0, h=10.1, l=9.6, c=10.0) for i in range(9)]  # range 0.5
-        bars.append(bar30(9, o=10.3, h=10.4, l=10.1, c=10.35))   # 在位
-        bars.append(bar30(10, o=10.8, h=12.5, l=10.6, c=12.2))   # 大棒越位（range 1.9 > 1.2×~0.5）
-        s = assess_breakout_strength(bars, breakout_level=10.4)
-        assert s.level == "strong"
-        assert s.actionable_strong
+        sig = bar30(10, o=10.8, h=12.5, l=10.6, c=12.2)   # 大棒极端收盘越位
+        bars.append(sig)
+        # 仅信号棒：不可判跟随 → actionable False（R05）
+        s0 = assess_with_follow_bars(bars, sig.bar_start, breakout_level=10.4)
+        assert s0.follow_through is None and not s0.actionable_strong
+        # 加下一棒跟随 → strong actionable
+        bars.append(bar30(11, o=12.0, h=12.6, l=11.7, c=12.3))
+        s1 = assess_with_follow_bars(bars, sig.bar_start, breakout_level=10.4)
+        assert s1.level == "strong" and s1.actionable_strong
 
 
 class TestWedge:

@@ -53,7 +53,13 @@ def price_h2_long(evidence: dict, current_price: float) -> StructuredPricePlan:
     if not (hl2 < entry):
         raise DomainValidationError(
             f"H2 多头结构非法: stop({hl2}) >= entry({entry})")
-    target = max(prior_high, entry + 2 * (entry - hl2))
+    # R09：结构目标 = 前高（真实障碍位）。不为通过 RR 门强抬到 2R；
+    # 若前高空间不足（prior_high <= entry），结构不成立——拒绝而非造目标。
+    if prior_high <= entry:
+        raise DomainValidationError(
+            f"H2 结构空间不足: prior_high({prior_high}) <= entry({entry})；"
+            f"不得人为抬高目标（R09）。固定2R退出属另一策略，须分开实验")
+    target = prior_high
     risk = entry - hl2
     plan = StructuredPricePlan(
         entry=entry, stop=hl2, target=target,
@@ -105,28 +111,42 @@ def price_insufficient(reason: str) -> StructuredPricePlan:
 def price_final_flag_reversal(evidence: dict, current_price: float) -> StructuredPricePlan:
     """final_flag 失败反转（KR-FINAL-FLAG-001 事件3）：需失败确认证据。
 
-    证据：flag_high（旗形上沿/失败突破高点）、failure_low（跌回位）、
-    measured_target（旗形高度投影）。事件2（顺势突破）不提供本定价。
+    R09 修正：本函数实现**空头反转**（上升趋势末端的旗形向下突破失败？
+    否——事件3语义：上升趋势末端旗形**顺势向上突破失败后反转做空**
+    不适配 A 股第一版（long-only）。多头反转版本要求方向自洽：
+    entry（跌回位上方确认）> stop（旗形低点失效位），即熊市末端向下
+    旗形向上失败 → 反手做多。字段语义改为：
+      flag_low：向下旗形的低点（失效位=stop）
+      failure_high：突破失败跌回前的高点（确认位=entry 上方触发）
+      measured_target：旗形高度投影（必须 > entry）
+    旧字段名 flag_high/failure_low 属方向错误——保留拒绝行为。
     """
-    need = ("flag_high", "failure_low", "measured_target")
+    need = ("flag_low", "failure_high", "measured_target")
     missing = [k for k in need if not isinstance(evidence.get(k), (int, float))
                or evidence.get(k, 0) <= 0]
-    if missing:
-        raise InsufficientStructureEvidence(
-            f"final_flag 反转定价缺证据: {missing}（事件3需失败确认，F04）")
-    # 方向由证据结构决定：这里实现多头反转版本（跌势末端旗形向下失败→反手多）
-    entry = float(evidence["failure_low"])          # 突破失败跌回位上方确认
-    stop = float(evidence["flag_high"])             # 旗形极端点为失效位
-    target = float(evidence["measured_target"])
-    if not (entry < stop):
-        raise DomainValidationError("final_flag 多头反转结构非法: entry >= stop")
-    if target <= entry:
-        raise DomainValidationError("final_flag 多头反转 target 必须高于 entry")
-    risk = stop - entry
-    return StructuredPricePlan(
-        entry=entry, stop=stop, target=target,
-        structure_rr=round((target - entry) / risk, 2),
-        price_status="structured",
-        basis=f"final_flag反转: entry=失败跌回{entry}, stop=旗形高{stop}, target={target}",
-        evidence_fields=tuple(need),
-    )
+    if not missing:
+        entry = float(evidence["failure_high"])       # 突破失败后回升确认位
+        stop = float(evidence["flag_low"])            # 旗形极端点失效位
+        target = float(evidence["measured_target"])
+        if not (stop < entry):
+            raise DomainValidationError(
+                f"final_flag 多头反转结构非法: stop({stop}) >= entry({entry})")
+        if target <= entry:
+            raise DomainValidationError(
+                f"final_flag 多头反转 target 必须高于 entry（R09 方向自洽）")
+        risk = stop - entry if stop > entry else entry - stop
+        # 多头：risk = entry - stop 不成立（stop<entry → risk=entry-stop 为负）？
+        # 正确多头结构：stop < entry，risk = entry - stop > 0
+        risk = entry - stop
+        return StructuredPricePlan(
+            entry=entry, stop=stop, target=target,
+            structure_rr=round((target - entry) / risk, 2),
+            price_status="structured",
+            basis=f"final_flag多头反转: entry=失败回升{entry}, stop=旗形低{stop}, target={target}",
+            evidence_fields=tuple(need),
+        )
+    # 旧字段（flag_high/failure_low）或缺失 → 拒绝（R09：方向倒挂禁止）
+    raise InsufficientStructureEvidence(
+        f"final_flag 反转定价证据缺失或方向字段非法（R09：需 "
+        f"flag_low<failure_high<measured_target 的多头自洽结构）: "
+        f"missing={missing or ['旧字段命名']}")

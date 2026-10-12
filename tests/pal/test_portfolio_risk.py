@@ -116,12 +116,19 @@ class TestExitPolicy:
         st = ExitPolicyState(stop=95.0, bars_held=10)
         assert eng.evaluate(st, 100, 96, 99, False) is None
 
-    def test_trailing_never_lowers(self):
+    def test_trailing_never_lowers_and_pending(self):
+        """R10：移动止损写 pending，advance_bar 后才激活且永不下调。"""
         st = ExitPolicyState(stop=95.0)
-        ExitPolicyEngine().update_trailing(st, 98.0)
+        eng = ExitPolicyEngine()
+        eng.update_trailing(st, 98.0)
+        assert st.stop == 95.0          # 本棒不生效（R10）
+        assert st.pending_stop == 98.0
+        eng.advance_bar(st)             # 下一棒激活
         assert st.stop == 98.0
-        ExitPolicyEngine().update_trailing(st, 90.0)   # 试图下调
-        assert st.stop == 98.0     # 只上调
+        eng.update_trailing(st, 90.0)   # 试图下调
+        assert st.pending_stop == 98.0  # 永不下调
+        eng.advance_bar(st)
+        assert st.stop == 98.0
 
 
 class TestCircuitBreaker:

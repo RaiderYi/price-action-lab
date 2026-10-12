@@ -130,32 +130,47 @@ EXIT_PRIORITY = (
 
 @dataclass
 class ExitPolicyState:
-    """退出状态（只用已知数据更新；新止损下一合法执行时点生效）。"""
+    """退出状态（R10：active 与 pending stop 分离）。"""
     stop: float
     trailing_armed: bool = False
     bars_held: int = 0
     timeout_bars: int = 40
+    pending_stop: float = 0.0     # R10：下一棒生效的新止损
 
 
 class ExitPolicyEngine:
     def evaluate(self, state: ExitPolicyState, high: float, low: float,
-                 close: float, structure_invalid: bool) -> Optional[ExitReason]:
-        """按固定优先级判定退出（S6-04）。"""
+                 close: float, structure_invalid: bool) -> Optional["ExitReason"]:
+        """按固定优先级判定退出（用 active stop，不含 pending）。"""
         if structure_invalid:
+            from pal.portfolio.risk import ExitReason
             return ExitReason.STRUCTURE_INVALID
         if low <= state.stop:
+            from pal.portfolio.risk import ExitReason
             return ExitReason.RISK_EXIT
         if state.trailing_armed and close < state.stop:
+            from pal.portfolio.risk import ExitReason
             return ExitReason.TRAILING_STOP
         if state.bars_held >= state.timeout_bars:
+            from pal.portfolio.risk import ExitReason
             return ExitReason.TIMEOUT
         return None
 
     def update_trailing(self, state: ExitPolicyState, new_stop: float,
                         effective_at_next_session: bool = True) -> float:
-        """移动止损：只上调；下一执行时点生效（返回生效止损）。"""
+        """R10：移动止损写 pending，下一棒（advance_bar）才激活。
+
+        不能用本棒更新后的价位回判本棒。
+        """
         if new_stop > state.stop:
-            state.stop = new_stop
+            state.pending_stop = new_stop     # 只挂 pending
+        return state.pending_stop
+
+    def advance_bar(self, state: ExitPolicyState) -> float:
+        """事件时钟推进：pending stop 激活为 active。"""
+        if state.pending_stop > state.stop:
+            state.stop = state.pending_stop
+        state.bars_held += 1
         return state.stop
 
 

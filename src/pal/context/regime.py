@@ -55,9 +55,11 @@ def assess_trend_regime(daily_bars: Sequence[Bar],
     lows = [b.low for b in daily_bars]
     closes = [b.close for b in daily_bars]
 
-    # 均线
-    ma20 = sum(closes[-20:]) / 20
-    ma60 = sum(closes[-60:]) / 60
+    # 均线（R10：数据不足时明示缩短窗口或 unknown，不静默错算）
+    ma20 = sum(closes[-20:]) / min(20, len(closes))
+    n60 = min(60, len(closes))
+    ma60_sufficient = len(closes) >= 60
+    ma60 = (sum(closes[-60:]) / 60) if ma60_sufficient else None
 
     # 摆点序列（周线级确认 → 用日 bar 右3确认）
     swings = detect_swings(list(daily_bars), confirm_bars=3)
@@ -77,19 +79,30 @@ def assess_trend_regime(daily_bars: Sequence[Bar],
     total = hh + hl + lh + ll
     bull_ratio = (hh + hl) / total if total else 0.5
 
+    ma_bull = (ma20 > ma60) if ma60_sufficient else None    # R10: None=不可判
     feats = {"hh": hh, "hl": hl, "lh": lh, "ll": ll,
              "bull_ratio": round(bull_ratio, 3),
-             "ma20": round(ma20, 2), "ma60": round(ma60, 2),
-             "ma_bull": ma20 > ma60,
+             "ma20": round(ma20, 2),
+             "ma60": round(ma60, 2) if ma60_sufficient else None,
+             "ma_bull": ma_bull,
+             "ma60_sufficient": ma60_sufficient,
              "range_width_pct": round((max(highs[-60:]) - min(lows[-60:])) / closes[-1] * 100, 1)}
 
-    if bull_ratio >= hh_hl_threshold and ma20 > ma60:
+    if ma60_sufficient:
+        trend_up = ma20 > ma60
+        trend_down = ma20 < ma60
+    else:
+        # MA 证据不可用：仅结构占比判趋势（阈值收紧），不足则 unknown
+        trend_up = bull_ratio >= max(hh_hl_threshold, 0.75)
+        trend_down = bull_ratio <= min(1 - hh_hl_threshold, 0.25)
+
+    if bull_ratio >= hh_hl_threshold and trend_up:
         kind = RegimeKind.UPTREND
-        reason = "HH/HL占优+均线多头"
+        reason = "HH/HL占优+均线多头" if ma60_sufficient else "HH/HL占优(MA60不足,结构加重)"
         score = min(1.0, bull_ratio)
-    elif bull_ratio <= 1 - hh_hl_threshold and ma20 < ma60:
+    elif bull_ratio <= 1 - hh_hl_threshold and trend_down:
         kind = RegimeKind.DOWNTREND
-        reason = "LH/LL占优+均线空头"
+        reason = "LH/LL占优+均线空头" if ma60_sufficient else "LH/LL占优(MA60不足,结构加重)"
         score = min(1.0, 1 - bull_ratio)
     else:
         kind = RegimeKind.RANGE

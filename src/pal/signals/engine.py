@@ -181,26 +181,40 @@ class DecisionEngine:
 
 def strict_h2_verdict(swings: Sequence[SwingPoint], bars: Sequence[Bar],
                       min_trend_quality: float) -> Optional[dict]:
-    """严格 H2 计数（KR-H2-COUNT-001）：趋势前提 + 两腿回调 + 第二 HL。
+    """严格 H2 计数（R04 修正：趋势门真实生效 + H 递进实现）。
 
-    不满足 → None（不发信号）；满足 → 证据 dict。
-    一个 HL 反弹不能伪装二次计数（F02 验收核心）。
+    条件（KR-H2-COUNT-001）：
+    1. 趋势前提：至少两个已确认 H，且最近 H 高于更早 H（牛市推进）；
+    2. 两腿回调：两个 L，第二 L 高于第一 L（HL 链）；
+    3. 当前收盘站上 HL2；
+    4. 趋势质量分 ≥ min_trend_quality（此前未使用——R04）。
+
+    不满足 → None。一个 HL 反弹不能伪装二次计数（F02）。
     """
     lows = [s for s in swings if s.kind == "L"]
     highs = [s for s in swings if s.kind == "H"]
-    if len(lows) < 2 or len(highs) < 1:
+    # R04：至少两个 H 且递进（此前只要求 1 个 H，注释未兑现）
+    if len(highs) < 2 or len(lows) < 2:
         return None
-    # 两腿：两个已确认 L，且第二 L 高于第一 L（回调中 HL 推进）
+    # H 递进：最近 H 高于更早 H（取最后两个已确认 H 比较）
+    if not (highs[-1].price > highs[-2].price):
+        return None                       # 无牛市推进
     l1, l2 = lows[-2], lows[-1]
     if l2.price <= l1.price:
         return None                       # 不是 higher low 链
-    # 趋势前提：此前存在 H 且该 H 高于更早 H（牛市推进）
-    if len(highs) < 1:
+    # 时序：L1 在 H1 之后、L2 在 H1 之后（回调两腿结构）
+    if not (l1.confirmed_at > highs[-2].confirmed_at
+            and l2.confirmed_at > l1.confirmed_at):
+        return None
+    # R04：趋势质量门（HH+HL 占比）
+    n_bull = sum(1 for a, b in zip(highs, highs[1:]) if b.price > a.price)
+    hh_ratio = n_bull / (len(highs) - 1) if len(highs) > 1 else 0.0
+    if hh_ratio < min_trend_quality:
         return None
     prior_high = max(h.price for h in highs)
     last = bars[-1]
     if last.close <= l2.price:
-        return None                       # 价格未站上 HL2
+        return None
     return {
         "formed_at": l2.confirmed_at,
         "current_price": last.close,

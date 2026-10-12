@@ -58,12 +58,16 @@ def detect_swings(bars: Sequence[Bar], confirm_bars: int = 3) -> List[SwingPoint
         b = ordered[i]
         is_h = all(b.high > x.high for x in left) and all(b.high > x.high for x in right)
         is_l = all(b.low < x.low for x in left) and all(b.low < x.low for x in right)
-        if is_h:
+        if is_h or is_l:
+            # R10：available_at = 确认所需的全部证据 bar 的最大 available_at
+            # （含确认棒供应商延迟，不早于确认棒 bar_end）
+            evidence_bars = list(left) + list(right) + [b]
             confirmed = right[-1].bar_end
-            out.append(SwingPoint("H", b.high, b.bar_start, confirmed, confirmed))
-        elif is_l:
-            confirmed = right[-1].bar_end
-            out.append(SwingPoint("L", b.low, b.bar_start, confirmed, confirmed))
+            available = max(x.available_at for x in evidence_bars)
+            available = max(available, confirmed)
+            price = b.high if is_h else b.low
+            out.append(SwingPoint("H" if is_h else "L", price,
+                                  b.bar_start, confirmed, available))
     return out
 
 

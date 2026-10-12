@@ -136,15 +136,17 @@ class TestFinalFlagPricing:
                 current_price=103.0)
 
     def test_event3_valid_long_reversal(self):
+        """R09 后语义：多头自洽字段 flag_low < failure_high < target。"""
         plan = price_final_flag_reversal(
-            {"flag_high": 106.0, "failure_low": 102.0, "measured_target": 112.0},
-            current_price=103.0)
+            {"flag_low": 100.0, "failure_high": 104.0, "measured_target": 110.0},
+            current_price=103.5)
         assert plan.price_status == "structured"
-        assert (plan.entry, plan.stop, plan.target) == (102.0, 106.0, 112.0)
+        assert (plan.entry, plan.stop, plan.target) == (104.0, 100.0, 110.0)
+        assert plan.structure_rr == pytest.approx(1.5)
 
     def test_missing_failure_evidence_rejected(self):
-        """事件3 必须有失败确认；事件2（顺势突破）不提供本定价。"""
-        with pytest.raises(InsufficientStructureEvidence, match="F04"):
+        """事件3 必须有失败确认；旧方向字段（flag_high/failure_low）拒绝。"""
+        with pytest.raises(InsufficientStructureEvidence, match="R09"):
             price_final_flag_reversal(
                 {"flag_high": 106.0, "measured_target": 96.0},
                 current_price=103.0)
