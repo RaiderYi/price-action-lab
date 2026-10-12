@@ -35,7 +35,9 @@ py-modules = [
     "strict_pa_qualification",
     "system_price_builder",
     "pal_cli",
+    "pal_capabilities",
 ]
+packages = ["pal", "pal.domain", "pal.signals", "pal.signals.legacy", "pal.config"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

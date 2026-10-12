@@ -6,6 +6,23 @@
 
 ## 批次记录
 
+### 批次 A2（S1，2026-10-12）：统一领域对象、规则与配置
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S1-01 | DONE | src/pal/domain/models.py, schemas/instrument_id.schema.json, tests/test_domain_models.py | `python -m pytest tests/test_domain_models.py -q` | 19 passed；方向三层分立/非法值构造时拒绝 |
+| S1-02 | DONE | src/pal/signals/registry.py, tests/pal/test_signals_registry.py | `python -m pytest tests/pal/test_signals_registry.py -q` | 10 passed；唯一注册表 19 组合（含旧表缺失的 breakout）；与 focus_config 一致性审计通过；unknown → KeyError |
+| S1-03 | DONE | src/pal/signals/legacy/__init__.py, tests/pal/test_legacy_alias.py | `python -m pytest tests/pal/test_legacy_alias.py -q` | 5 passed；legacy H2 与 strict H2 setup_id 内容 hash 不同（统计天然分离，F01/F02 验收） |
+| S1-04 | DONE | src/pal/config/versions.py, tests/pal/test_config_versions.py | `python -m pytest tests/pal/test_config_versions.py -q` | 7 passed；配置快照内容寻址 hash；运行期漂移 → ConfigDriftError |
+| S1-05 | DONE | knowledge/rule_cards/（3卡+INDEX） | 人工审核 + 数学复算 | H2计数/FinalFlag语义/概率表数学错误三卡AUDITED；p=0.70→b≈0.4286 复算一致 |
+| S1-06 | DONE | src/pal/domain/estimates.py | （与S1-07合并测试） | HeuristicScore/EmpiricalProbability/SourceEstimate 类型分立；未校准 p_win=None 由类型强制 |
+| S1-07 | DONE | src/pal/domain/identity.py, tests/test_estimates_identity.py | `python -m pytest tests/test_estimates_identity.py -q` | 10 passed；10类前缀 ID 内容寻址幂等 |
+| S1-08 | DONE | src/pal/domain/decision.py, tests/test_decision_snapshot.py | `python -m pytest tests/test_decision_snapshot.py -q` | 7 passed；15个登记 reason_code；accept 必须带证据；JSON 序列化确定性 |
+
+**阶段出口核验**：没有两个模块分别定义"什么是 H2"（唯一注册表 + 一致性
+审计 ✓）；配置变更可追踪（快照 hash + 漂移守卫 ✓）。
+全套测试：**250 passed / 0 failed**（核心 228 + pal 层 22）。
+
 ### 批次 A1（S0，2026-10-12）：冻结证据、恢复可运行基础
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |

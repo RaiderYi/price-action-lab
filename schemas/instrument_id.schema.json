@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RaiderYi/price-action-lab/schemas/instrument_id.schema.json",
+  "title": "InstrumentId",
+  "type": "object",
+  "required": ["code", "exchange", "board"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "证券代码，字符串保前导零"
+    },
+    "exchange": {
+      "type": "string",
+      "enum": ["SSE", "SZSE"]
+    },
+    "board": {
+      "type": "string",
+      "enum": ["main", "chinext", "star", "bse"]
+    }
+  },
+  "additionalProperties": false
+}
