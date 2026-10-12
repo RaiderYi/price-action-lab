@@ -21,3 +21,6 @@ logs/
 价格行为学_分享包*.zip
 价格行为学_分享包*/
 
+
+# Python packaging artifacts
+*.egg-info/

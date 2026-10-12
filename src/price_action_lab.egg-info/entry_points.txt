@@ -1,2 +1,0 @@
-[console_scripts]
-pal = pal_cli:main
