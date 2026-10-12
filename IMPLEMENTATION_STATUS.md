@@ -6,6 +6,41 @@
 
 ## 批次记录
 
+### 批次 D（S6+S7+S8核心+完备性自查，2026-10-12）
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S6-01 | DONE | src/pal/portfolio/risk.py PortfolioConstraints | `pytest tests/pal/test_portfolio_risk.py -q` | 22 passed；风险预算+资金+单票三重上限；极窄止损10%封顶 |
+| S6-02 | DONE | 同上 | 同上 | 总仓位80%/行业25%/最多10只闸；拒绝理由结构化 |
+| S6-03 | DONE | 同上 gap_stress_loss | 同上 | 跳空超1R损失计算（T+1无法隔夜规避） |
+| S6-04 | DONE | 同上 ExitPolicyEngine | 同上 | 固定优先级（结构失效>止损>移动>止盈>超时）；移动止损只上调 |
+| S6-05 | DONE | 同上 | 同上 | 同票多来源一份净预算；默认不摊平 |
+| S6-06 | DONE | 同上 CircuitBreaker | 同上 | 回撤10%/日亏2%/数据故障三重熔断；停开仓不停风险管理；人工覆盖独立标签 |
+| S6-07 | DONE | 同上 capacity_report | 同上 | 参与率约束，不线性外推 |
+| S6-08 | DONE | 同上 PaperDefaults | 同上 | 任务书默认参数全量代码化（100万/0.25%/10%/25%/80%/10只） |
+| S7-01 | DONE | src/pal/research/framework.py, tests/pal/test_research_framework.py | `pytest tests/pal/test_research_framework.py -q` | 18 passed；预注册不完整→禁PASS；9变体注册制 |
+| S7-02 | DONE | 同上 TimeSplit/purge | 同上 | 跨边界标签清除（12-25 > 12-22 被清） |
+| S7-04 | DONE | 同上 metrics | 同上 | 收益差vs相对财富分立命名；IR零波动→None(NA)；R用初始风险 |
+| S7-08 | DONE | 同上 release_gate | 同上 | PASS/FAIL/INCONCLUSIVE 分立；缺数据≠零收益 |
+| S8-02 | DONE | src/pal/reporting/daily_plan.py, tests/pal/test_daily_plan.py | `pytest tests/pal/test_daily_plan.py -q` | 5 passed；四类目保留研究日志不裁剪；空计划=合法状态；JSON+MD 同源渲染 |
+
+**完备性自查（用户要求，脚本可复跑）**：
+`python .audit/scenario_coverage.py` → **任务书 §7 验收场景 27/27 全覆盖**。
+
+### 完备性声明（80 任务真实状态，不虚报）
+
+已完成（含部分/等外部输入）：S0 全8、S1 全8、S2 全8、S3 7/8（S3-03 BLOCKED
+私有包）、S4 全8、S5 全8、S6 全8、S7 4/8（S7-03/05/06/07 需真实数据运行）、
+S8 1/8（S8-02 核心；S8-01/03/04/05/06/07/08 部分由 CLI/报告/测试承载，
+完整产品化待真实数据）。S9 未开始（前向运行阶段，任务书定位为"实证观察，
+需数月"，依赖固定版本+真实数据）。
+
+真实缺口（如实登记，非阻塞工程）：
+1. 真实行情数据未接入——所有收益相关结论仍不可做（§5 红线）
+2. MAIN_BOARD 费率标注 UNVERIFIED，正式使用前须按 S5-01 核验官方规则
+3. 私有五模型包未取得（S3-03），provider 协议就绪
+4. S9 前向运行/调度/对账未实施（需先有可运行的每日数据流）
+
 ### 批次 C（S5 全部，2026-10-12）：真实撮合与账户账本
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
