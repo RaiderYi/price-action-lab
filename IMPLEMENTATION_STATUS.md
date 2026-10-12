@@ -6,6 +6,25 @@
 
 ## 批次记录
 
+### 批次 B1（S2，2026-10-12）：时点正确的市场数据层
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S2-01 | DONE | docs/audit/data-capability-matrix.md | 人工核对 | 能力矩阵+缺口清单；如实声明"仓库不持有任何可复现原始行情" |
+| S2-02 | DONE | src/pal/data/security_master.py, tests/pal/test_security_bars.py | `python -m pytest tests/pal/test_security_bars.py -q` | 12 passed；688120=华海清科 名称回归；as-of 股票池排除未上市 |
+| S2-03 | DONE | src/pal/data/calendar.py, tests/pal/test_calendar.py | `python -m pytest tests/pal/test_calendar.py -q` | 11 passed；8×30m网格不跨午休；15:00收盘可用时刻 |
+| S2-04 | DONE | src/pal/data/quality.py（并入 test_data_quality_snapshot.py） | 同上 | ZERO_VOLUME/ABNORMAL_JUMP 标记；双源分歧>容差抛错不静默拼接 |
+| S2-05 | DONE | src/pal/data/adjustments.py | 同上 | raw/research 双坐标系+roundtrip；分红送转持仓变换 |
+| S2-06 | DONE | src/pal/data/bars.py | 同上 | available_at<bar_end 构造拒绝（F17）；as-of 视图排除未完成bar；供应商延迟顺延可见性 |
+| S2-07 | DONE | src/pal/data/snapshots.py | 同上 | 内容寻址 snapshot_id（时间无关）；文件篡改检测 |
+| S2-08 | DONE | src/pal/data/health.py | 同上 | 缺最终bar/源错误→DataStaleError 只锁新开仓 |
+
+**阶段出口核验**：每条信息能回答"什么时候发生、什么时候系统能知道"
+（available_at 全链强制 ✓）；没有数据的能力明确不可用（能力矩阵如实
+登记 ✓）。全套测试 **287 passed / 0 failed**。
+真实数据接入是外部依赖（S2-01 已列决策请求），不阻断后续 S3/S4
+工程（合成夹具可跑，收益结论等真实数据——任务书 §5 红线不变）。
+
 ### 批次 A2（S1，2026-10-12）：统一领域对象、规则与配置
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
