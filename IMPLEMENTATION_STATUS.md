@@ -6,6 +6,29 @@
 
 ## 批次记录
 
+### 第二轮复审修正批次（2026-10-12，审阅提交 b412e1a → 本轮）
+
+| 批次 | R 编号 | 状态 | 验收证据 |
+|---|---|---|---|
+| A 状态纠偏 | R12 | DONE | docs/audit/status-correction-round2.md（逐任务 PARTIAL/BLOCKED 纠偏；三处语义错位映射作废） |
+| B 数据/资金不变量 | R03 | DONE | tests/pal/test_round2_batch_b.py 4项：单根上午bar→非final日线；多证券过滤 |
+| B | R06 | DONE | 同上 5项：CANCELLED/REJECTED/INTENT fill 拒绝；fill_id 幂等；多partial |
+| B | R07 | DONE | 同上 2项：9%已有→仅剩1%额度；在途占用 |
+| B | R08 | DONE | 同上 4项+旧3项更新：缺CI→INCONCLUSIVE；回撤90%→FAIL；NaN→非PASS；G0必过 |
+| B | R10(T+1) | DONE | 同上 1项：sellable_from≤当日→构造拒绝 |
+| C 信号/定价语义 | R04 | DONE | tests/pal/test_round2_batch_c.py 2项：趋势门1.1生效；H递降拒绝 |
+| C | R05 | DONE | 同上 3项：首棒突破无跟随；跟随仅后续bar；弱收盘非strong |
+| C | R09 | DONE | 同上 2项：H2空间不足拒绝（不强抬2R）；final_flag方向自洽字段 |
+| C | R10(其余) | DONE | 同上 3项：trailing pending→advance_bar；摆点延迟传播；MA60不足unknown |
+| D 端到端 | R01/R02 | DONE | tests/pal/test_e2e_orchestrator.py 9项：完整链路（候选门/regime门/幂等/NAV序列/未来扰动不变/无成交路径/零量不成交） |
+
+**本轮证据**：红→绿对照——批次B 16项反例、批次C 10项反例全部先复现后修复；
+端到端 8 验收场景中 6 个直接测试覆盖（多票争资/持仓上限场景由 R07 修复+约束器测试承载）。
+全套 **462 passed / 1 skipped**。
+
+**批次 E/F（真实数据与研究验收）**：BLOCKED——外部依赖（行情供应商、
+主数据、官方规则核验、私有包），登记于 docs/audit/data-capability-matrix.md。
+
 ### 批次 D（S6+S7+S8核心+完备性自查，2026-10-12）
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
