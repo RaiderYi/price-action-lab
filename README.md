@@ -46,17 +46,23 @@ price-action-lab/
 │   ┌── market_analyzer.py     # 市场结构分析
 ├── scripts/                   # 回测与扫描脚本
 │   └── backtest_focus_random5.py    # 随机5股 walk-forward 回测
-├── tests/                     # 测试套件（889 通过）
+├── tests/                     # 核心测试套件（192 通过；53 个仓外集成测试在 tests/integration/，见 docs/audit/dependency-map.md）
 └── data/reviews/              # 设计文档与回测 JSON 证据
 ```
 
 ## 快速开始
 
 ```bash
-# 回归测试
+# 安装（可编辑模式，任意目录可用 pal 命令）
+pip install -e .
+
+# 环境与能力自检（核心模块 + 可选外部模块缺口报告）
+pal doctor
+
+# 回归测试（核心套件；仓外集成测试在 tests/integration/，默认排除）
 python -m pytest tests/ -q
 
-# 随机 5 股回测（需要 data/market_data/30m/*.csv）
+# 随机 5 股回测（需要 data/market_data/30m/*.csv，行情不入库）
 python scripts/backtest_focus_random5.py
 
 # 信号面自检
@@ -90,7 +96,7 @@ raw K线
 
 | 证据 | 位置 | 结果 |
 |------|------|------|
-| 随机5股回测 | `docs/backtest-evidence/random5-walkforward.md` | 无超额收益（-0.87%），H2 强趋势股有效/震荡股亏损 |
+| 随机5股回测 | `docs/backtest-evidence/random5-walkforward.md` | 无超额收益（-0.87% [口径：每股收益差算术平均，非复利净值，无费用]），H2 强趋势股有效/震荡股亏损 |
 | double_top/bottom 证伪 | `docs/backtest-evidence/` | 13/13 亏损 -10.4R，已从信号面移除 |
 | 信号面收敛决策 | `docs/architecture/focus-v1.md` | 11 live → 6 键/5 结构 |
 

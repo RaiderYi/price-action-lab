@@ -1,0 +1,112 @@
+{
+  "purpose": "S0-01 legacy evidence freeze: manifest of legacy backtest artifacts at commit 02154d7",
+  "created_at": "2026-10-12T21:17:17.023985+08:00",
+  "git_commit": "02154d7327530f699be23017534d6157bd646f5a",
+  "files": {
+    "scripts/backtest_focus_random5.py": {
+      "sha256": "4abf41bbcf1a9cdbeda2caea38af67a9c17fb423e34485a0bcaa93a28e34b07a",
+      "size_bytes": 6129,
+      "mtime": "2026-10-11T22:55:33.818296+08:00"
+    },
+    "data/reviews/FOCUS_V1_BACKTEST_RANDOM5_20261011.json": {
+      "sha256": "9cc6fc581fcfe34d7b7fcc651583755fb29ca870fa6ae22537bbc7684f9b656e",
+      "size_bytes": 3768,
+      "mtime": "2026-10-11T22:55:33.923154+08:00"
+    },
+    "docs/backtest-evidence/random5-walkforward.md": {
+      "sha256": "a49d6b51045c7d2ab431b57b43a3588417d304a62a47fcc2f7e0abfa22417486",
+      "size_bytes": 3211,
+      "mtime": "2026-10-11T22:55:35.699957+08:00"
+    },
+    "docs/integration/INTEGRATION_PLAN_20261012.md": {
+      "sha256": "7da1663adcdcb82d1ec2a9de1cc876c48c5b8569f35f5c3ccf3a6f5e80d69285",
+      "size_bytes": 16038,
+      "mtime": "2026-10-12T09:36:15.056176+08:00"
+    },
+    "README.md": {
+      "sha256": "07f166f2698088fdc29c9cd1da878a420e6976f34ff7bc245d38714883a89d3d",
+      "size_bytes": 5292,
+      "mtime": "2026-10-11T22:55:33.920022+08:00"
+    }
+  },
+  "legacy_metric_recomputation": {
+    "metric_definition": "per-stock (strat_ret - bh_ret)*100, then arithmetic mean across 5 stocks; documented as legacy definition (F09), NOT portfolio NAV alpha",
+    "n_trades_total": 34,
+    "n_symbols": 5,
+    "arithmetic_mean_diff_pct_points": -0.8681,
+    "per_stock": {
+      "688120": {
+        "n_trades": 11,
+        "winrate": 0.5454545454545454,
+        "avgR": 0.9817311874728208,
+        "sumR": 10.79904306220103,
+        "strat_ret_pct": 13.7825,
+        "bh_ret_pct": 3.451,
+        "diff_pct_points": 10.3315,
+        "signal_counts": {
+          "H2": 9,
+          "L2": 5,
+          "wedge": 2,
+          "breakout": 1
+        }
+      },
+      "600900": {
+        "n_trades": 3,
+        "winrate": 0.3333333333333333,
+        "avgR": -0.548387096774195,
+        "sumR": -1.645161290322585,
+        "strat_ret_pct": -0.5223,
+        "bh_ret_pct": -2.0891,
+        "diff_pct_points": 1.5669,
+        "signal_counts": {
+          "tr_fade": 2,
+          "L2": 10,
+          "breakout": 2
+        }
+      },
+      "688256": {
+        "n_trades": 8,
+        "winrate": 0.25,
+        "avgR": -0.23958333333333331,
+        "sumR": -1.9166666666666665,
+        "strat_ret_pct": -7.5072,
+        "bh_ret_pct": 2.9754,
+        "diff_pct_points": -10.4827,
+        "signal_counts": {
+          "wedge": 3,
+          "L2": 4,
+          "H2": 3,
+          "tr_fade": 5,
+          "breakout": 2
+        }
+      },
+      "600893": {
+        "n_trades": 7,
+        "winrate": 0.2857142857142857,
+        "avgR": -0.08571428571428774,
+        "sumR": -0.6000000000000142,
+        "strat_ret_pct": 1.1534,
+        "bh_ret_pct": 6.7186,
+        "diff_pct_points": -5.5652,
+        "signal_counts": {
+          "H2": 8
+        }
+      },
+      "600089": {
+        "n_trades": 5,
+        "winrate": 0.2,
+        "avgR": -0.4,
+        "sumR": -2.0,
+        "strat_ret_pct": -0.9082,
+        "bh_ret_pct": -0.717,
+        "diff_pct_points": -0.1912,
+        "signal_counts": {
+          "H2": 4,
+          "breakout": 4,
+          "final_flag": 1,
+          "L2": 4
+        }
+      }
+    }
+  }
+}

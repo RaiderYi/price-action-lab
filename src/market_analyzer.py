@@ -229,14 +229,14 @@ def is_breakout(df, range_levels):
     v2: 优先使用 kb_rules breakout_quality 评分，回退到原有逻辑
     """
     # KB rules 优先：使用突破质量评分引擎
-    try:
+    # [S0-06/F13] 降级不再静默：capability 缺失被记录在 run 的 capabilities 快照中
+    import pal_capabilities
+    if pal_capabilities.capability_available("kb_rules"):
         from kb_rules.breakout_quality import score_breakout_quality
         result = score_breakout_quality(df)
         if result.triggered and result.confidence >= 0.4:
             direction = result.details.get("direction", "up")
             return True, direction
-    except ImportError:
-        pass
     
     # fallback: 原有逻辑
     if not range_levels:
@@ -279,13 +279,13 @@ def is_transition(df, trend_type, swings):
     v2: 优先使用 kb_rules climax 检测，回退到原有逻辑
     """
     # KB rules 优先：使用高潮检测引擎
-    try:
+    # [S0-06/F13] 降级不再静默：capability 缺失被记录在 run 的 capabilities 快照中
+    import pal_capabilities
+    if pal_capabilities.capability_available("kb_rules"):
         from kb_rules.climax import detect_climax
         result = detect_climax(df, phase=trend_type)
         if result.triggered and result.confidence >= 0.6:
             return True, f"高潮检测: {result.reasoning}"
-    except ImportError:
-        pass
     
     # fallback: 原有逻辑
     if len(df) < 10:
@@ -474,15 +474,15 @@ def analyze_market_structure(df: pd.DataFrame) -> MarketStructure:
     key_levels["atr"] = atr
 
     # 新增：楔形检测（不影响 phase 判定，仅记录）
-    try:
+    # [S0-06/F13] 降级不再静默：capability 缺失被记录在 run 的 capabilities 快照中
+    import pal_capabilities
+    if pal_capabilities.capability_available("kb_rules"):
         from kb_rules.trend_maturity import evaluate_trend_maturity
         wedge_result = evaluate_trend_maturity(df, direction="up" if swing_type == "uptrend" else "down")
         if wedge_result.triggered:
             key_levels["wedge_detected"] = True
             key_levels["wedge_confidence"] = wedge_result.confidence
             key_levels["wedge_details"] = wedge_result.details
-    except ImportError:
-        pass
 
     # 8. 近5根K线摘要
     bar_summary = summarize_recent_bars(df)

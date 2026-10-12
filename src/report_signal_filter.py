@@ -6,12 +6,21 @@ Classifies signals as:
   legacy_proxy:          H1/H2/L1/L2 proxies — appendix only
   strict_research_only:  Brooks strict signals not yet production-ready
   not_entry_signal:      Pattern/Context/Target — should not appear as signals
+
+[S0-06/F12] brooks_ontology_registry 不在本仓库（外部模块）。导入改为
+capability 门控：模块存在时正常使用；缺失时本模块的筛选能力显式禁用，
+调用方得到明确错误而不是 ModuleNotFoundError 或静默错误结果。
 """
 
-from brooks_ontology_registry import (
-    is_brooks_entry_signal, is_legacy_proxy_signal, get_brooks_category,
-    BROOKS_ENTRY_SIGNAL_REGISTRY, BROOKS_LEGACY_PROXY_REGISTRY,
-)
+import pal_capabilities
+
+_capability_ok = pal_capabilities.capability_available("brooks_ontology_registry")
+
+if _capability_ok:
+    from brooks_ontology_registry import (
+        is_brooks_entry_signal, is_legacy_proxy_signal, get_brooks_category,
+        BROOKS_ENTRY_SIGNAL_REGISTRY, BROOKS_LEGACY_PROXY_REGISTRY,
+    )
 
 IMPLEMENTED_STRICT = {
     "brooks_h1_strict", "brooks_h2_strict",
@@ -20,8 +29,21 @@ IMPLEMENTED_STRICT = {
 }
 
 
+class ReportFilterUnavailable(RuntimeError):
+    """Raised when the report filter is used without brooks_ontology_registry."""
+
+
+def _require_registry():
+    if not _capability_ok:
+        raise ReportFilterUnavailable(
+            "brooks_ontology_registry 未安装（外部模块，不在本仓库）。"
+            "报告筛选能力禁用；安装该模块后重试，或使用不依赖 ontology 的报告路径。"
+        )
+
+
 def classify_signal(signal_type: str) -> str:
     """Classify a signal for report routing."""
+    _require_registry()
     cat = get_brooks_category(signal_type)
 
     if cat == "EntrySignal":

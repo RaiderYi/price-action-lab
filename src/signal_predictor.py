@@ -298,19 +298,22 @@ def _is_breakout_entry(df: pd.DataFrame, direction: str, atr: float) -> Tuple[bo
     extreme_pct = cfg["breakout_close_extreme_pct"]
 
     # upside: close breaks prior high AND close in top 30% of bar
+    # [S0-05/F03 修正] 顶部30%极端收盘：pos_in_bar >= extreme_pct(0.7)。
+    # 旧代码误写为 >= (1-extreme_pct)=0.3，导致收于40%的弱多头棒也被放行。
     if last_close > prior_high:
         pos_in_bar = (last_close - last_low) / bar_range if bar_range > 0 else 0.5
-        if pos_in_bar >= (1 - extreme_pct):
+        if pos_in_bar >= extreme_pct:
             return True, "buy", (
                 f"精选突破: 收盘{last_close:.2f}突破{lookback}棒前高{prior_high:.2f}, "
-                f"收于棒体上部{pos_in_bar:.0%}(极端), 棒区间{bar_range:.2f}≥{cfg['breakout_min_range_atr']}×ATR"
+                f"收于棒体上部{pos_in_bar:.0%}(极端, 需>={extreme_pct:.0%}), 棒区间{bar_range:.2f}≥{cfg['breakout_min_range_atr']}×ATR"
             )
         return False, "", ""
 
     # downside: close breaks prior low AND close in bottom 30%
+    # [S0-05/F03 修正] 底部30%极端收盘：pos_in_bar <= 1-extreme_pct(0.3)。
     if last_close < prior_low:
         pos_in_bar = (last_close - last_low) / bar_range if bar_range > 0 else 0.5
-        if pos_in_bar <= extreme_pct:
+        if pos_in_bar <= (1 - extreme_pct):
             return True, "sell", (
                 f"精选突破: 收盘{last_close:.2f}跌破{lookback}棒前低{prior_low:.2f}, "
                 f"收于棒体下部{pos_in_bar:.0%}(极端), 棒区间{bar_range:.2f}≥{cfg['breakout_min_range_atr']}×ATR"

@@ -36,6 +36,8 @@ def load(sym):
     return df.sort_values('date').reset_index(drop=True)
 
 results = []
+fatal_error = False
+ERROR_RATE_LIMIT = 0.05   # 单票信号计算错误率超过5% → run=invalid
 for sym in picks:
     df = load(sym)
     n = len(df)
@@ -43,6 +45,7 @@ for sym in picks:
     open_trade = None
     sell_signal_days = set()
     signals_seen = {}
+    errors_by_type = {}  # [S0-06/F13] 记录信号计算错误，不再静默
 
     for i in range(LOOKBACK, n - 1):
         window = df.iloc[:i+1]
@@ -64,10 +67,15 @@ for sym in picks:
             continue  # 持仓中不检测新信号
 
         # ── 信号检测 ──
+        # [S0-06/F13] 旧代码 except Exception: continue 会静默吞掉真实错误，
+        # 改变样本且不可见。现在：错误计数并记录类型，结束后汇总输出；
+        # 单票错误率超阈值时脚本以非零退出码失败（run=invalid 而非静默）。
         try:
             analysis = analyze_market_structure(window)
             preds = predict_signals(window.tail(160).reset_index(drop=True) if len(window) > 160 else window, analysis)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            key = f"{type(exc).__name__}: {str(exc)[:80]}"
+            errors_by_type[key] = errors_by_type.get(key, 0) + 1
             continue
         buys = [p for p in preds if p.direction == 'buy']
         sells = [p for p in preds if p.direction == 'sell']
@@ -104,6 +112,15 @@ for sym in picks:
     n_win = sum(1 for r in rs if r > 0)
     strat_ret = sum((t['exit_px'] - t['entry_px']) for t in trades) / df.iloc[LOOKBACK]['close']  # 按本金(区间起点价)计的总收益
     bh_ret = (df.iloc[-1]['close'] - df.iloc[LOOKBACK]['close']) / df.iloc[LOOKBACK]['close']
+
+    # [S0-06/F13] 单票错误率检查：超阈值 → run=invalid
+    n_evals = max(1, n - 1 - LOOKBACK)
+    if errors_by_type:
+        err_total = sum(errors_by_type.values())
+        err_rate = err_total / n_evals
+        print(f"  [{sym}] 信号计算错误 {err_total}/{n_evals} ({err_rate:.1%}): {errors_by_type}")
+        if err_rate > ERROR_RATE_LIMIT:
+            fatal_error = True
     results.append(dict(sym=sym, trades=len(trades), win=n_win, winrate=n_win/len(trades) if trades else 0,
                         avgR=np.mean(rs) if rs else 0, sumR=sum(rs), strat_ret=strat_ret, bh_ret=bh_ret,
                         signals=signals_seen, sell_days=len(sell_signal_days),
@@ -121,6 +138,11 @@ print(f"\n平均超额收益: {tot_ex/len(results):+.2%}")
 print("\n每股信号分布与交易明细:")
 for r in results:
     print(f"  {r['sym']}: 信号={r['signals']} risk-off天数={r['sell_days']} 交易={r['detail']}")
+
+# ── [S0-06/F13] 错误汇总：信号计算错误不再是静默的 ──
+if fatal_error:
+    print("\n[INVALID RUN] 存在单票信号计算错误率超 %.0f%% 的股票，本轮结果不可用于结论。" % (ERROR_RATE_LIMIT * 100))
+    sys.exit(2)
 
 json.dump(results, open('data/reviews/FOCUS_V1_BACKTEST_RANDOM5_20261011.json','w',encoding='utf-8'),
           ensure_ascii=False, indent=1, default=str)
