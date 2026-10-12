@@ -6,6 +6,28 @@
 
 ## 批次记录
 
+### 批次 B2（S3 全部 + S4 核心，2026-10-12）：选股来源与统一结构引擎
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S3-01 | DONE | src/pal/selection/providers.py（Candidate/Provider协议） | `python -m pytest tests/pal/test_selection.py -q` | 21 passed；eligible<available 构造拒绝；缺提供者=disabled |
+| S3-02 | DONE | 同上（STRUCTURED_V1 解析） | 同上 | 缺字段/时间倒置/非字符串symbol/标记无块 → BridgeFormatError；Markdown表格不解析 |
+| S3-03 | BLOCKED | （需私有环境核对） | - | 私有包未取得（任务书 §10 登记）；协议+合成夹具已就绪 |
+| S3-04 | DONE | providers.py（admission=全量准入语义） | 同上 | V1桥接保留全量 estimate（ev/wr 原样+uncalibrated_prior），未过滤池不冒充全池 |
+| S3-05 | DONE | src/pal/selection/merge.py | 同上 | 5模型同票→1净持仓5来源；方向冲突记录不丢弃 |
+| S3-06 | DONE | src/pal/selection/baselines.py | 同上 | 透明动量+流动性+趋势加分，参数预注册；数据不足/低流动性排除 |
+| S3-07 | DONE | merge.py rank_by_score | 同上 | 分数分解components；同分代码序确定性 |
+| S3-08 | DONE | merge.py CandidateLifecycle | 同上 | 盘后候选eligible_from次日；24h过期；未到期不可用 |
+| S4-03 | PARTIAL | strict H2 全链（h2.py/engine.py） | - | S4-03 完整接线排 S4 剩余批次（wedge/tr_fade 研究实现+engine.evaluate 统一入口）；H2 定价/生命周期/注册血统已就绪 |
+| S4-04 | DONE（阈值层） | S0-05 已修 F03；strength 统一留 S4 尾批 | tests/test_breakout_extremes.py | 6 passed（阈值）；F16 双实现收敛在 engine 批次处理 |
+| S4-06 | DONE | src/pal/signals/lifecycle.py | tests/pal/test_lifecycle_pricing.py | RAW→QUALIFIED→ARMED→TRIGGERED 强制；终态不复活；同结构幂等；冷却；多空冲突显式 |
+| S4-07 | DONE | src/pal/pricing/structure_prices.py | 同上 | H2/breakout/final_flag反转 结构定价；缺证据→InsufficientStructureEvidence（F05 禁兜底）；多头 stop<entry<target 硬校验 |
+
+**阶段状态**：S3 出口达成（稳定输出"为什么选中、来自哪里、何时可用"✓，
+私有包缺失只影响该 provider ✓）。S4 剩余：S4-01 因果摆点、S4-02 regime、
+S4-03 strict 接线、S4-05 wedge/final_flag/tr_fade 检测、S4-04 F16 收敛、
+S4-08 engine.evaluate 统一入口。全套测试 **327 passed / 0 failed**。
+
 ### 批次 B1（S2，2026-10-12）：时点正确的市场数据层
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
