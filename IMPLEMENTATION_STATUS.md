@@ -6,6 +6,24 @@
 
 ## 批次记录
 
+### 批次 B3（S4 剩余，2026-10-12）：因果摆点、regime、统一引擎
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S4-01 | DONE | src/pal/context/swings.py, tests/pal/test_swings_regime.py | `pytest tests/pal/test_swings_regime.py -q` | 11 passed；右3棒确认前不可用；prefix_stability 前缀一致性性质测试通过（追加数据不改过去决策） |
+| S4-02 | DONE | src/pal/context/regime.py | 同上 | unknown≠range 显式；RegimeLabelBook 切换需连续2次确认（滞后政策）；特征可审计 |
+| S4-03 | DONE | src/pal/signals/engine.py strict_h2_verdict | `pytest tests/pal/test_engine_patterns.py -q` | 严格两腿+HL递进计数；单 HL 不计数（F02 验收）；接线 engine._eval_h2 |
+| S4-04 | DONE | src/pal/signals/breakout.py | 同上 | F16 收敛：无突破位→none（禁大棒fallback）；大棒+越位+跟随基础→strong；统一入口 |
+| S4-05 | DONE | src/pal/signals/patterns.py | 同上 | wedge 三推单调+幅度递减+间隔校验（F18）；final_flag 事件1本体检测（F04 拆分）；tr_fade 归一化位置（F19） |
+| S4-06 | DONE | （B2 已交付 lifecycle.py） | - | 见批次 B2 |
+| S4-07 | DONE | （B2 已交付 structure_prices.py） | - | 见批次 B2 |
+| S4-08 | DONE | src/pal/signals/engine.py DecisionEngine | 同上 | evaluate(asof,...) 不读系统时钟；相同事实→相同决策（确定性测试）；输出仅 wait/reject（F06：无触发确认绝不 accept 成交） |
+
+**阶段出口核验（S4 全部 DONE）**：第一版 H2 与 breakout 正确可测 ✓；
+wedge/final_flag/tr_fade 保留研究能力（patterns.py，maturity=research）✓；
+六个旧键≠六个同时上线策略（注册表分立承载）✓。
+全套测试 **355 passed / 0 failed**（pal 层 127）。
+
 ### 批次 B2（S3 全部 + S4 核心，2026-10-12）：选股来源与统一结构引擎
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
