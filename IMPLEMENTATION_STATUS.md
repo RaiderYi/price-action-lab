@@ -6,6 +6,24 @@
 
 ## 批次记录
 
+### 批次 C（S5 全部，2026-10-12）：真实撮合与账户账本
+
+| ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
+|---|---|---|---|---|
+| S5-01 | DONE | src/pal/execution/market_rules.py, tests/pal/test_execution_ledger.py | `pytest tests/pal/test_execution_ledger.py -q` | 版本化 MarketRuleSet（rules_version 显式，首版标注 UNVERIFIED 待官方核验）；RuleBook as-of 查询 |
+| S5-02 | DONE | 同上 Order 状态机 | 同上 | INTENT→SUBMITTED→PARTIAL/FILLED/CANCELLED/REJECTED；超量成交拒绝；FILLED 终态 |
+| S5-03 | DONE | src/pal/execution/fill_models.py | 同上 | 跳空止损按开盘成交（不填stop）；一字板不成交；同bar双触达保守取止损+路径不确定标记；参与率上限 |
+| S5-04 | DONE | 同上 | 同上 | 涨跌停价计算；一字涨停买入拒；一字跌停卖出拒（风险延续） |
+| S5-05 | DONE | src/pal/ledger/positions.py PositionBook | 同上 | lot 级 T+1：昨100+今100当日只可卖100；FIFO 扣减；清仓 key 不要求市价 |
+| S5-06 | DONE | 同上 AccountLedger | 同上 | 手算案例逐项核对（100005买入/10989.5净卖出）；现金守恒审计通过；费用不双计 |
+| S5-07 | DONE | src/pal/research/replay.py, tests/pal/test_replay.py | `pytest tests/pal/test_replay.py -q` | 末bar正常处理；期末持仓→open_eod_mark 估值（不进成交列表）；回放内 T+1/跳空遵守 |
+| S5-08 | DONE | 同上 decompose_diff | 同上 | 4成分差异分解（rule_fix/signal_swap/pricing_model/costs），结构化输出不归因单一因素 |
+
+**阶段出口核验（S5 全部 DONE）**：合成会计与成交边界案例全部一致 ✓；
+真实行情结果可逐笔追到资金与订单（账本 movements 全留痕）✓。
+30m OHLC 路径不可知部分显式假设（path_uncertain）✓。
+全套测试 **383 passed / 0 failed**。收益结论等待真实数据+G关口（§5.5）。
+
 ### 批次 B3（S4 剩余，2026-10-12）：因果摆点、regime、统一引擎
 
 | ID | 状态 | 变更文件 | 验收命令 | 实际结果 |
