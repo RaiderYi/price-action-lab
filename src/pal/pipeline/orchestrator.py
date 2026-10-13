@@ -128,6 +128,11 @@ class SessionOrchestrator:
             self.store.append("session_init",
                               {"initial_cash": ledger.initial_cash})
         self.constraints = PortfolioConstraints(config.paper)
+        # AR08/AR09：组合分配器 + OMS 接入主链
+        from pal.portfolio.allocator import PortfolioAllocator
+        from pal.oms.service import OrderManagementService
+        self.allocator = PortfolioAllocator(config.paper)
+        self.oms = OrderManagementService(store)
         self.armed: Dict[str, ArmedSetup] = {}
         self.position_plans: Dict[str, PositionPlan] = {}   # T04：原子绑定
         self.decisions_log: List[DecisionSnapshot] = []
@@ -137,6 +142,27 @@ class SessionOrchestrator:
         self._consumed_bars: set = set()      # T02/F04：bar 幂等键
         self._last_clock: Optional[datetime] = None
         self._marks_cache: Dict[str, float] = {}   # A04：全票最新收盘缓存
+        self._industries: Dict[str, str] = {}      # AR08：行业映射（注入）
+
+    def _industry_of(self, iid: str) -> str:
+        return self._industries.get(iid, "unknown")
+
+    def _trigger_regime_ok(self, instrument_id: str, asof: datetime,
+                           daily_bars: Sequence[Bar]) -> bool:
+        """AR10/A11：armed 触发前的环境重查。
+
+        有当时可知的日线且判定 downtrend → 拒绝成交（环境变更生效）；
+        无日线背景（如纯 30m 流）→ armed 产生时已过门，放行。
+        """
+        from pal.context.regime import RegimeKind, assess_trend_regime
+        dailies = [b for b in daily_bars
+                   if b.is_final
+                   and b.instrument_id == instrument_id
+                   and b.available_at <= asof]
+        if not dailies:
+            return True      # 无背景可查：不因缺数据冻结已武装计划
+        kind = assess_trend_regime(dailies).kind
+        return kind != RegimeKind.DOWNTREND
 
     # ── T02：bar 幂等键 ──
     @staticmethod
@@ -192,11 +218,14 @@ class SessionOrchestrator:
             return []
         # A08：先验证（不标 consumed）——校验失败零副作用可重试
         self._require_next_trading_day(bar)
-        self._consumed_bars.add(key)
-        self._last_clock = bar.available_at
-        if self.store is not None:      # N09：消费进度持久化
-            self.store.append("bar_consumed", {"bar_key": key},
-                              ts=bar.available_at.isoformat())
+        # AR05 完善：消费标记推迟到处理成功后——磁盘故障/异常时
+        # 该棒不丢失（V06 尾巴），重试可完整重新处理
+        def _commit_consumed():
+            self._consumed_bars.add(key)
+            self._last_clock = bar.available_at
+            if self.store is not None:
+                self.store.append("bar_consumed", {"bar_key": key},
+                                  ts=bar.available_at.isoformat())
 
         events: List[str] = []
         asof = bar.available_at
@@ -214,7 +243,10 @@ class SessionOrchestrator:
             if setup.armed_at >= asof:
                 continue
             setup.bars_since_armed += 1
-            if bar.high >= setup.entry:
+            # AR10/A11：触发前资格重查——环境变坏时已有 armed 不得开仓
+            # （复审复现：DOWNTREND 时仍成交 8300@10.2）
+            if bar.high >= setup.entry and self._trigger_regime_ok(
+                    instrument_id, asof, daily_bars):
                 events += self._try_fill(setup, bar)
             elif setup.bars_since_armed >= self.cfg.trigger_expiry_bars:
                 del self.armed[sid]
@@ -279,6 +311,7 @@ class SessionOrchestrator:
             self.nav_series.append(
                 (asof, self.ledger.nav(dict(self._marks_cache))))
         self.event_log.extend(events)
+        _commit_consumed()      # AR05：处理成功才标记消费
         return events
 
     @staticmethod
@@ -300,17 +333,23 @@ class SessionOrchestrator:
         est_px = max(bar.open, setup.entry)
         marks = dict(self._marks_cache)
         marks[iid] = bar.close     # 本票最新价
-        nav = self.ledger.nav(marks)
-        positions_value = self.ledger.positions.mark_value(marks)
-        rd = self.constraints.size_position(
-            entry=est_px, stop=setup.stop,
-            cash=self.ledger.cash, nav=nav,
-            positions_value=positions_value,
-            instrument_value=positions_value,
-            industry_value=positions_value)
-        if not rd.allow or rd.max_qty <= 0:
-            events.append(f"NO_CAPACITY:{setup.setup_id}:{rd.reason_codes}")
+        # AR08：账户级分配（allocator 扣已有持仓/行业/持仓数/熔断/在途）
+        from pal.portfolio.allocator import AllocationRequest
+        alloc_results = self.allocator.allocate(
+            [AllocationRequest(iid, setup.setup_id, est_px, setup.stop,
+                               setup.target, score=1.0,
+                               industry=self._industry_of(iid))],
+            self.ledger, marks,
+            industry_of=self._industries or None)
+        ar = alloc_results[0]
+        if not ar.allow or ar.qty <= 0:
+            events.append(
+                f"NO_CAPACITY:{setup.setup_id}:{ar.reason_codes}")
             return events
+        # 适配 RiskDecision 形状（下游用 rd.max_qty）
+        from pal.portfolio.risk import RiskDecision
+        rd = RiskDecision(True, ar.reason_codes, ar.qty,
+                          0.0, 0.0, 0.0, self.ledger.cash)
         # T03/F02：buy-stop 撮合（量/参与率内部检查）
         fill = match_buy_stop(bar, setup.entry,
                               self.cfg.max_participation_pct)
@@ -319,16 +358,19 @@ class SessionOrchestrator:
             return events
         # A05：实际成交价不得劣于定仓用的保守上界；劣于则按实际价缩量
         if fill.price > est_px:
-            rd = self.constraints.size_position(
-                entry=fill.price, stop=setup.stop,
-                cash=self.ledger.cash, nav=nav,
-                positions_value=positions_value,
-                instrument_value=positions_value,
-                industry_value=positions_value)
-            if not rd.allow or rd.max_qty <= 0:
+            from pal.portfolio.allocator import AllocationRequest
+            recheck = self.allocator.allocate(
+                [AllocationRequest(iid, setup.setup_id, fill.price,
+                                   setup.stop, setup.target, score=1.0,
+                                   industry=self._industry_of(iid))],
+                self.ledger, marks,
+                industry_of=self._industries or None)[0]
+            if not recheck.allow or recheck.qty <= 0:
                 events.append(
                     f"FILL_REJECTED_RISK:{setup.setup_id}@{fill.price}")
                 return events
+            rd = RiskDecision(True, recheck.reason_codes, recheck.qty,
+                              0.0, 0.0, 0.0, self.ledger.cash)
         # A06：lot 取整（MarketRuleSet.lot_size）——零股缩为合法申报量
         qty = min(fill.qty, rd.max_qty)
         lot = self.cfg.rules.lot_size
@@ -359,7 +401,11 @@ class SessionOrchestrator:
                 "commission": round(
                     max(qty * fill.price * self.cfg.rules.commission_bps
                         / 10000, self.cfg.rules.min_commission), 4),
-                "sellable_from": nxt.isoformat()},
+                "sellable_from": nxt.isoformat(),
+                # AR05：计划随 fill 持久化（恢复退出计划用）
+                "plan": {"stop": setup.stop, "target": setup.target,
+                         "entry_date": d.isoformat(), "qty": qty,
+                         "setup_id": setup.setup_id}},
                 ts=bar.available_at.isoformat())
         self.ledger.buy(iid, qty, fill.price, d, self.cfg.rules,
                         t1_next_trading_day=nxt)

@@ -352,32 +352,31 @@ def _cmd_backtest(args) -> int:
         daily_by_iid.setdefault(b.instrument_id, []).append(b)
 
     from datetime import datetime as _dtm
-    from pal.selection.providers import Candidate as _Cand
-    bt_days = []
-    for d, bars in sorted(by_day.items()):
-        at = _dtm.fromisoformat(d.isoformat() + "T00:00:00+08:00")
-        day_cands = tuple(
-            _Cand(f"cand_{iid.replace('.', '_')}_{d.isoformat()}",
-                  iid, ("static_pool",), at, at, None)
-            for iid in si["manifest"].get("instruments", {})
-            if any(b.instrument_id == iid for b in bars))
-        bt_days.append(BacktestDay(d, tuple(bars), tuple(si["daily"]),
-                                   day_cands))
-
-    # N09/N10：事件仓库+账本快照自产（reconcile 可直接运行）
+    # AR11：CLI 只是适配器——统一走 TradingRuntime 服务
+    from pal.runtime.service import TradingRuntime
     store = EventStore(os.path.join(out_dir, "events.jsonl"))
-    cfg = OrchestratorConfig(EngineConfig("cli-backtest-v1"), calendar=cal)
-    runner = BacktestRunner(cfg, 1_000_000.0)
-    runner.orch = __import__("pal.pipeline.orchestrator",
-                             fromlist=["SessionOrchestrator"]) \
-        .SessionOrchestrator(cfg, runner.ledger, store=store)
-    res = runner.run(bt_days)
+    rt = TradingRuntime(si, 1_000_000.0, store=store,
+                        engine_version="cli-backtest-v1")
+    all_ev = rt.process_bars(si["bars"])
+    class _Res:  # 兼容产物结构
+        events = all_ev
+        final_cash = rt.ledger.cash
+        final_nav = rt.ledger.cash
+        nav_series = list(rt.orch.nav_series)
+        open_position_marks = {}
+    res = _Res()
+    marks = {b.instrument_id: b.close for b in si["bars"]}
+    res.final_nav = rt.ledger.nav(marks)
+    for iid in {b.instrument_id for b in si["bars"]}:
+        q = rt.ledger.positions.total_qty(iid)
+        if q > 0:
+            res.open_position_marks[iid] = (q, marks[iid])
 
     marks = {b.instrument_id: b.close for b in si["bars"]}
     traded = {e.payload["instrument_id"] for e in store.by_kind("fill")}
     ledger_snapshot = {
-        "cash": round(runner.ledger.cash, 4),
-        "positions": {iid: runner.ledger.positions.total_qty(iid)
+        "cash": round(rt.ledger.cash, 4),
+        "positions": {iid: rt.ledger.positions.total_qty(iid)
                       for iid in sorted(traded)},
     }
     with open(os.path.join(out_dir, "ledger_snapshot.json"), "w",
@@ -391,7 +390,7 @@ def _cmd_backtest(args) -> int:
     nav_doc = {
         "schema": "backtest/v2",
         "run_id": run_id,
-        "n_days": len(bt_days),
+        "n_days": len(by_day),
         "n_candidates": len(cands),
         "n_events": len(res.events),
         "n_fills": n_fills,
@@ -413,7 +412,7 @@ def _cmd_backtest(args) -> int:
               encoding="utf-8") as f:
         json.dump(_manifest_doc(run_id, "cli-backtest-v1", si, status), f,
                   ensure_ascii=False, indent=1)
-    print(f"backtest {status}: run={run_id} days={len(bt_days)} "
+    print(f"backtest {status}: run={run_id} days={len(by_day)} "
           f"fills={n_fills} events={len(res.events)} "
           f"nav={nav_doc['final_nav']}")
     print(f"  events : {os.path.join(out_dir, 'events.jsonl')}")
@@ -474,11 +473,25 @@ def _cmd_paper(args) -> int:
             sf = (_date.fromisoformat(last["sellable_from"])
                   if last else days[0])
             cost = (float(last["price"]) if last else 10.0)
+            plan_p = last.get("plan") if last else None
+            acquired = (_date.fromisoformat(plan_p["entry_date"])
+                        if plan_p else sf)
             ledger.positions.add_lot(PositionLot(
-                f"lot_r_{iid}", iid, q, cost, sf, sf))
-            # V05：恢复退出计划（stop/target 需事件携带；当前事件 schema
-            # 无 plan 字段——计划恢复依赖 orchestrator 重评估，
-            # 这里至少保证持仓与现金正确，退出由新 bar 重驱动）
+                f"lot_r_{iid}", iid, q, cost, acquired, sf))
+            # AR05：退出计划随 fill 的 plan 字段恢复（stop/target/批次）
+            plan_p = last.get("plan") if last else None
+            if plan_p:
+                orch.position_plans.setdefault(iid, [])
+                existing = orch.position_plans[iid]
+                if not isinstance(existing, list):
+                    existing = [existing]
+                from pal.pipeline.orchestrator import PositionPlan
+                existing.append(PositionPlan(
+                    iid, plan_p["setup_id"], float(last["price"]),
+                    float(plan_p["stop"]), float(plan_p["target"]),
+                    _date.fromisoformat(plan_p["entry_date"]),
+                    int(plan_p["qty"])))
+                orch.position_plans[iid] = existing
     # V04：恢复 consumed 游标（重复 bar 不报错、不重复消费）
     for e in store.by_kind("bar_consumed"):
         orch._consumed_bars.add(e.payload["bar_key"])

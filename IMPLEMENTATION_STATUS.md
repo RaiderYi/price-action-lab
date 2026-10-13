@@ -6,6 +6,24 @@
 
 ## 批次记录
 
+### 第五轮 B2 完成批次（2026-10-13，AR05尾/AR08/AR09/AR10/AR11）
+
+| 任务 | 状态 | 交付 | 证据 |
+|---|---|---|---|
+| AR05 尾 | DONE | bar_consumed 推迟到处理成功后（磁盘故障不丢棒）；fill 事件携带 plan（stop/target/entry_date/qty）；paper 恢复 lot 的 acquired_date 用 plan.entry_date | 注入写失败→棒可重试；重启后 EXIT_STOP:2400@8.5 自动触发、现金 996378.70=连续运行 |
+| AR10/A11 | DONE | armed 触发前 regime 重查（_trigger_regime_ok：当时可知日线判 downtrend → 拒成交） | 复验：DOWNTREND 下 armed 高触不再成交（原 8300@10.2） |
+| AR09 | DONE | pal/oms/service.py：OrderManagementService（生命周期/一单多fill/撤单释放占用/幂等） | tests/pal/test_oms.py 7项全绿 |
+| AR08 | DONE | allocator 接入 _try_fill 主链（每次成交过 allocator：行业/持仓数/熔断/在途闸）；A05 复核段同用 allocator；manifest 行业映射注入 | 541 全绿；原 R10/V10 登记（allocator 未入主链）清除 |
+| AR11 | DONE | pal/runtime/service.py：TradingRuntime 统一服务（快照校验/manifest 日历/行业注入/按日候选/确定性批次驱动/产物）；CLI backtest 改为纯适配器 | tests/pal/test_runtime_service.py 5项：全链=CLI 同值 987476.3375、分块=整段、日历尊重 manifest、行业注入、篡改拒绝 |
+
+**B2 里程碑（蓝图 §17）**：AR01–AR12 全部完成（AR12 报告投影在 V08/scan 三态中落地）。
+统一入口→成交→退出→恢复→对账闭环全部经 TradingRuntime。
+**剩余（B3/B4）**：AR13 真实数据、AR14 五模型、AR15 持续 paper 运维、
+AR16 样本外研究、AR17 券商——外部依赖与授权，不阻断已交付工程。
+
+**本轮证据**：全套 **541 passed / 0 failed**（第五轮批次后 529 → +12）。
+CLI smoke：backtest fills=2/reconcile OK/scan 三态。
+
 ### 第五轮架构复审修正批次（2026-10-13，审查基线 8618b34，AR01-AR12 部分）
 
 依据：《price-action-lab_完整交易系统架构蓝图与第五轮复审_20261013.md》（V01–V10，AR01–AR18）。
