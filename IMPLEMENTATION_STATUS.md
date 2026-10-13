@@ -6,6 +6,35 @@
 
 ## 批次记录
 
+### 第五轮架构复审修正批次（2026-10-13，审查基线 8618b34，AR01-AR12 部分）
+
+依据：《price-action-lab_完整交易系统架构蓝图与第五轮复审_20261013.md》（V01–V10，AR01–AR18）。
+先复现（.audit/review5_checks.py），后修复，全部反例脚本重跑验证。
+
+| 编号 | 状态 | 修复 | 证据（review5_checks 实测） |
+|---|---|---|---|
+| V01/AR01 | DONE | hash 字节契约：write_bar_jsonl 固定 LF 二进制写（根因：文本模式 CRLF 转换）；manifest 声明文件缺失拒绝 | V01_pack_manifest_ok=true；全套 529 绿（审查时 3 红） |
+| V09/AR01 | DONE | loader 缺声明文件 → SystemExit(2) | V09_missing_file=SystemExit(2) |
+| V02/AR03 | DONE | 自动 regime 过滤 available_at<=asof + 本票日线 | 加未来60根日线前后一致（原：泄漏变 ARMED） |
+| V03/AR03 | DONE | BacktestRunner._history 跨 run 持久 | 整段=分日：同3事件、同现金 987476.3375（原：增量无事件） |
+| V04/AR06 | DONE | paper 恢复 consumed 游标 | 同 state 二次运行不报重复 bar |
+| V05/AR05/06 | DONE | session_init 仅空仓库写；paper 恢复现金+lot+可卖日 | 重启后 cash=975994/qty=2400 保留，session_init=1，reconcile OK（原：现金重置持仓丢） |
+| V06/AR05 | DONE | fill 先落盘后记账（write-ahead 顺序） | 注入写失败：现金 100万不变、持仓 0、stored_fills=0——零半状态（原：账已变记录无） |
+| V07/AR07 | DONE | PositionPlan 绑定批次；reduce_batch/sell_batch 按 acquired_date 卖 | 新批止损但T+1不可卖 → EXIT_BLOCKED_T1_PLAN:new，两批 lot 完好（原：串卖旧批） |
+| V08/AR04/12 | DONE | rejected_candidates 记 instrument_id；scan ARMED 即时捕获 | 三态：ARMED(600519)/REJ_REGIME_downtrend(300750)/NO_SIGNAL(000001)（原 watch=3） |
+| 验收包 | DONE | 300750 日线背景改锯齿递跌（正序生成修相位） | regime=DOWNTREND 实测确认 |
+
+**架构落地（AR02 起步）**：PositionPlan.lot_id()（§6.1 契约）；
+sell_batch/reduce_batch（账本按批次）。
+**如实登记**：
+- V06 遗留：bar_consumed 先于 fill 落盘，磁盘故障时该棒永久消费
+  （无经济损失但丢机会）——完整修复需 AR05 SQLite 事务（下一批）
+- 退出计划 stop/target 尚未持久化到事件（恢复后依赖新 bar 重驱动）
+- AR08-12（allocator 入主链/OMS/跟随确认/统一服务）未开始
+- V10 allocator 未入主链（上轮已登记）
+
+**本轮证据**：全套 **529 passed / 0 failed / 0 skipped**。
+
 ### 第四轮审查修正批次（2026-10-13，审查基线 fb5dbee，N01–N11 部分）
 
 依据：《price-action-lab_第四轮审查与交易系统分析报告_20261013.md》（A01–A12，N01–N14）。

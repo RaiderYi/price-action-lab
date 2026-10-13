@@ -75,6 +75,35 @@ class PositionBook:
         self._lots[instrument_id] = [l for l in self._lots[instrument_id] if l.qty > 0]
         return consumed
 
+    def reduce_batch(self, instrument_id: str, qty: int, on: date,
+                     acquired_date: date) -> List[PositionLot]:
+        """V07/AR07：按买入批次卖出——只动 acquired_date 匹配的 lot。
+
+        新批计划不得串卖旧批；不可卖部分抛错（调用方保留计划）。
+        """
+        if qty <= 0:
+            raise DomainValidationError("卖出数量必须为正")
+        batch = [l for l in self._lots.get(instrument_id, [])
+                 if l.acquired_date == acquired_date]
+        avail = sum(l.sellable_qty(on) for l in batch)
+        if qty > avail:
+            raise DomainValidationError(
+                f"本批次可卖量不足: 欲卖{qty}, 批次{acquired_date}可卖{avail}"
+                f" @ {on}（V07：不串卖其他批次）")
+        remaining = qty
+        consumed = []
+        for lot in batch:
+            if remaining == 0:
+                break
+            take = min(lot.sellable_qty(on), remaining)
+            if take:
+                lot.qty -= take
+                remaining -= take
+                consumed.append(lot)
+        self._lots[instrument_id] = [l for l in self._lots.get(
+            instrument_id, []) if l.qty > 0]
+        return consumed
+
     def mark_value(self, marks: Dict[str, float]) -> float:
         total = 0.0
         for iid, lots in self._lots.items():
@@ -138,6 +167,20 @@ class AccountLedger:
         if qty <= 0 or price <= 0:
             raise DomainValidationError("卖出参数非法")
         self.positions.reduce(instrument_id, qty, trade_date)
+        return self._post_sell(instrument_id, qty, price, trade_date, rules)
+
+    def sell_batch(self, instrument_id: str, qty: int, price: float,
+                   trade_date: date, rules: MarketRuleSet,
+                   acquired_date: date) -> float:
+        """V07：按批次卖出（退出计划专用）。"""
+        if qty <= 0 or price <= 0:
+            raise DomainValidationError("卖出参数非法")
+        self.positions.reduce_batch(instrument_id, qty, trade_date,
+                                    acquired_date)
+        return self._post_sell(instrument_id, qty, price, trade_date, rules)
+
+    def _post_sell(self, instrument_id: str, qty: int, price: float,
+                   trade_date: date, rules: MarketRuleSet) -> float:
         gross = qty * price
         commission = max(gross * rules.commission_bps / 10000, rules.min_commission)
         stamp = gross * rules.stamp_tax_sell_bps / 10000

@@ -67,7 +67,11 @@ class ArmedSetup:
 
 @dataclass
 class PositionPlan:
-    """T04/F01：成交时原子绑定的退出计划（多票安全，随持仓走）。"""
+    """T04/F01：成交时原子绑定的退出计划（多票安全，随持仓走）。
+
+    V07/AR07：计划显式绑定所属买入批次（lot_key=entry_date+setup_id），
+    退出只能卖本批可卖量——新批不可卖(T+1)时计划保留，不串卖旧批。
+    """
     instrument_id: str
     setup_id: str
     entry: float
@@ -76,6 +80,9 @@ class PositionPlan:
     entry_date: date
     qty: int
     order: Optional[Order] = None
+
+    def lot_id(self) -> str:
+        return f"lot_{self.instrument_id}_{self.entry_date.isoformat()}_{self.qty}"
 
 
 def match_buy_stop(bar: Bar, entry: float,
@@ -116,7 +123,8 @@ class SessionOrchestrator:
         self.ledger = ledger
         self.engine = engine or DecisionEngine(config.engine, SetupBook())
         self.store = store       # N09：业务事件持久化（可选注入）
-        if self.store is not None:
+        if self.store is not None and len(store) == 0:
+            # V05：仅全新仓库写 session_init——重启恢复不得把现金归零重置
             self.store.append("session_init",
                               {"initial_cash": ledger.initial_cash})
         self.constraints = PortfolioConstraints(config.paper)
@@ -124,7 +132,7 @@ class SessionOrchestrator:
         self.position_plans: Dict[str, PositionPlan] = {}   # T04：原子绑定
         self.decisions_log: List[DecisionSnapshot] = []
         self.nav_series: List[Tuple[datetime, float]] = []
-        self.rejected_candidates: List[Tuple[str, str]] = []
+        self.rejected_candidates: List[Tuple[str, str]] = []  # (instrument_id|candidate_id, reason)
         self.event_log: List[str] = []
         self._consumed_bars: set = set()      # T02/F04：bar 幂等键
         self._last_clock: Optional[datetime] = None
@@ -148,12 +156,12 @@ class SessionOrchestrator:
                         asof: datetime) -> bool:
         if cand.instrument_id != instrument_id:
             self.rejected_candidates.append(
-                (cand.candidate_id, "INSTRUMENT_MISMATCH"))
+                (cand.instrument_id, "INSTRUMENT_MISMATCH"))
             return False
         ok, why = CandidateLifecycle().validate_for_session(
             cand, session_open=asof, now=asof)
         if not ok:
-            self.rejected_candidates.append((cand.candidate_id, why))
+            self.rejected_candidates.append((cand.instrument_id, why))
             return False
         return True
 
@@ -221,10 +229,14 @@ class SessionOrchestrator:
                 candidate, instrument_id, asof):
             eff_regime = regime_kind
             if eff_regime is None:
-                # regime 只读行情背景，不推进 SetupBook：
-                # 用引擎上下文模块直接评估（无副作用）
+                # regime 只读行情背景，不推进 SetupBook。
+                # V02/AR03：只看当时可知（available_at<=asof）且属于
+                # 本票的 final 日线——未来/异票日线不得改变过去的门
                 from pal.context.regime import assess_trend_regime
-                dailies = [b for b in daily_bars if b.is_final]
+                dailies = [b for b in daily_bars
+                           if b.is_final
+                           and b.instrument_id == instrument_id
+                           and b.available_at <= asof]
                 if dailies:
                     eff_regime = assess_trend_regime(dailies).kind
                 else:
@@ -252,7 +264,7 @@ class SessionOrchestrator:
                             events.append(f"ARMED:{sid}")
             else:
                 self.rejected_candidates.append(
-                    (candidate.candidate_id, f"REJ_REGIME_{eff_regime.value}"))
+                    (candidate.instrument_id, f"REJ_REGIME_{eff_regime.value}"))
                 events.append(f"REGIME_BLOCK:{eff_regime.value}")
 
         # 4) NAV（A04：全票 marks 缓存——他票行情推进时本票用最后已知价；
@@ -333,14 +345,9 @@ class SessionOrchestrator:
         d = bar.bar_start.date()
         nxt = (self.cfg.calendar.next_trading_day(d)
                if self.cfg.calendar is not None else d + timedelta(days=1))
-        self.ledger.buy(iid, qty, fill.price, d, self.cfg.rules,
-                        t1_next_trading_day=nxt)
-        # T04/F01：原子绑定退出计划（不再依赖手工 bind）
-        # A06：同票多批不静默覆盖——旧计划未平仓时保留为分批计划
-        self._bind_position_plan(iid, setup, fill.price, qty, d, o)
-        del self.armed[setup.setup_id]
-        events.append(f"FILL:{setup.setup_id}:{qty}@{fill.price}")
-        if self.store is not None:      # N09：订单+成交写仓库
+        # V06/AR05：先持久化（write-ahead），成功后才改账本——
+        # fill 写失败时零半状态（现金不变、持仓不变、可重试）
+        if self.store is not None:
             self.store.append("order", {
                 "order_id": o.order_id, "plan_id": setup.setup_id,
                 "side": "buy", "qty": qty, "price": fill.price,
@@ -354,6 +361,13 @@ class SessionOrchestrator:
                         / 10000, self.cfg.rules.min_commission), 4),
                 "sellable_from": nxt.isoformat()},
                 ts=bar.available_at.isoformat())
+        self.ledger.buy(iid, qty, fill.price, d, self.cfg.rules,
+                        t1_next_trading_day=nxt)
+        # T04/F01：原子绑定退出计划（不再依赖手工 bind）
+        # A06：同票多批不静默覆盖——旧计划未平仓时保留为分批计划
+        self._bind_position_plan(iid, setup, fill.price, qty, d, o)
+        del self.armed[setup.setup_id]
+        events.append(f"FILL:{setup.setup_id}:{qty}@{fill.price}")
         return events
 
     def _bind_position_plan(self, iid: str, setup: "ArmedSetup",
@@ -401,12 +415,19 @@ class SessionOrchestrator:
                     f"EXIT_BLOCKED_NO_LIQUIDITY:{instrument_id}")
                 remaining_plans.append(plan)
                 continue
-            sellable = min(
-                sellable,
-                self.ledger.positions.sellable_qty(instrument_id, d))
-            if sellable <= 0:
+            # V07/AR07：本批可卖量 = min(本计划剩余量, 全票当日可卖)
+            # ——新批 T+1 不可卖时本计划保留，绝不串卖旧批
+            batch = [l for l in self.ledger.positions._lots.get(
+                instrument_id, [])
+                if l.acquired_date == plan.entry_date]
+            batch_sellable = min(
+                plan.qty,
+                sum(l.sellable_qty(d) for l in batch))
+            if batch_sellable <= 0:
+                events.append(f"EXIT_BLOCKED_T1_PLAN:{plan.setup_id}")
                 remaining_plans.append(plan)
                 continue
+            sellable = batch_sellable
             # 止损优先（跳空按开盘，一字跌停卖不出→留风险）
             if plan.stop and bar.low <= plan.stop:
                 r = match_stop_loss_long(bar, plan.stop)
@@ -419,10 +440,7 @@ class SessionOrchestrator:
                     so.apply_fill(sellable, r.price,
                                   fill_id=f"fillx_{plan.setup_id}_{d}",
                                   event_at=bar.bar_end.isoformat())
-                    self.ledger.sell(instrument_id, sellable, r.price, d,
-                                     self.cfg.rules)
-                    events.append(f"EXIT_STOP:{sellable}@{r.price}")
-                    if self.store is not None:   # N09
+                    if self.store is not None:   # V06：先落盘
                         self.store.append("fill", {
                             "fill_id": f"fillx_{plan.setup_id}_{d}",
                             "order_id": so.order_id, "side": "sell",
@@ -437,6 +455,10 @@ class SessionOrchestrator:
                                 * self.cfg.rules.stamp_tax_sell_bps
                                 / 10000, 4)},
                             ts=bar.available_at.isoformat())
+                    self.ledger.sell_batch(instrument_id, sellable, r.price,
+                                           d, self.cfg.rules,
+                                           acquired_date=plan.entry_date)
+                    events.append(f"EXIT_STOP:{sellable}@{r.price}")
                 else:
                     events.append(f"EXIT_BLOCKED:{r.assumptions}")
                     remaining_plans.append(plan)
@@ -453,10 +475,7 @@ class SessionOrchestrator:
                 so.apply_fill(sellable, exit_px,
                               fill_id=f"filltp_{plan.setup_id}_{d}",
                               event_at=bar.bar_end.isoformat())
-                self.ledger.sell(instrument_id, sellable, exit_px, d,
-                                 self.cfg.rules)
-                events.append(f"EXIT_TARGET:{sellable}@{exit_px}")
-                if self.store is not None:   # N09
+                if self.store is not None:   # V06：先落盘
                     self.store.append("fill", {
                         "fill_id": f"filltp_{plan.setup_id}_{d}",
                         "order_id": so.order_id, "side": "sell",
@@ -471,6 +490,10 @@ class SessionOrchestrator:
                             * self.cfg.rules.stamp_tax_sell_bps
                             / 10000, 4)},
                         ts=bar.available_at.isoformat())
+                self.ledger.sell_batch(instrument_id, sellable, exit_px,
+                                       d, self.cfg.rules,
+                                       acquired_date=plan.entry_date)
+                events.append(f"EXIT_TARGET:{sellable}@{exit_px}")
                 continue
             # 无退出条件命中：计划保留
             remaining_plans.append(plan)

@@ -68,19 +68,34 @@ def _slots():
 
 
 def _daily_bg(iid: str, n: int = 60, base: float = 10.0,
-              drift: float = 0.0) -> List[Bar]:
-    """n 根历史日线（工作日回溯，regime 输入）。"""
-    out = []
+              drift: float = 0.0, downtrend: bool = False) -> List[Bar]:
+    """n 根历史日线（工作日回溯，regime 输入）。
+
+    downtrend=True：带波动 LH/LL 递跌结构（确保 swing 判定
+    真正 downtrend，而非平滑缓跌被判 RANGE）。
+    """
+    import math
+    # 先收集工作日（时间正序），再生成价格——避免倒序相位颠倒
+    days_list = []
     d = TRADING_DAYS[0] - timedelta(days=1)
-    while len(out) < n:
+    while len(days_list) < n:
         if d.weekday() < 5:
-            s = datetime.combine(d, time(9, 30), tzinfo=TZ)
-            e = datetime.combine(d, time(15, 0), tzinfo=TZ)
-            px = base + drift * len(out)
-            out.append(Bar(iid, "1d", s, e, e, px, px * 1.01, px * 0.99,
-                           px, 1e6, 5e7))
+            days_list.append(d)
         d -= timedelta(days=1)
-    out.reverse()
+    days_list.reverse()
+    out = []
+    for i, d in enumerate(days_list):
+        s = datetime.combine(d, time(9, 30), tzinfo=TZ)
+        e = datetime.combine(d, time(15, 0), tzinfo=TZ)
+        if downtrend:
+            # 锯齿递跌（cycle=8/amp=1.5/decay=0.94 → LH+LL 结构
+            # 占比过阈 + MA 空头 → DOWNTREND，实测验证）
+            base = 20.0 * (0.94 ** (i / 8.0))
+            px = base + 1.5 * math.sin(2 * math.pi * (i % 8) / 8.0)
+        else:
+            px = base + drift * i
+        out.append(Bar(iid, "1d", s, e, e, px, px * 1.02, px * 0.98,
+                       px, 1e6, 5e7))
     return out
 
 
@@ -146,7 +161,8 @@ def build_pack(out_dir: str) -> Dict[str, str]:
             os.path.join(out_dir, f"bars_{fn}.jsonl"), bars)
         hashes[f"daily_{fn}.jsonl"] = write_bar_jsonl(
             os.path.join(out_dir, f"daily_{fn}.jsonl"),
-            _daily_bg(iid, drift=0.002 if "300750" not in iid else -0.001))
+            _daily_bg(iid, drift=0.002) if iid != "SZSE.300750"
+            else _daily_bg(iid, downtrend=True))
     manifest = {
         "schema": "acceptance_pack/v1",
         "snapshot_id": "acceptance-frozen-v1",

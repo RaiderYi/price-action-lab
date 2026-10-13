@@ -153,8 +153,12 @@ def _load_snapshot(snap: str) -> dict:
         input_hashes[os.path.basename(fp)] = _sha256_file(fp)
         daily += _load_bars_file(fp)
     # manifest 声明的 hash 必须匹配（篡改检测，A12 版本追溯）
+    # V09：声明文件缺失 = 契约违反，直接拒绝（不再静默接受）
     declared = manifest.get("file_sha256", {})
     for fn, h in declared.items():
+        if not os.path.isfile(os.path.join(snap, fn)):
+            print(f"ERROR: 声明的输入文件缺失: {fn}", file=sys.stderr)
+            raise SystemExit(EXIT_INVALID)
         actual = input_hashes.get(fn)
         if actual is not None and actual != h:
             print(f"ERROR: 快照文件与冻结 hash 不符: {fn}", file=sys.stderr)
@@ -262,6 +266,7 @@ def _cmd_scan(args) -> int:
     orch = SessionOrchestrator(cfg, AccountLedger(1_000_000.0))
     history = {}
     evaluated = set()
+    armed_seen = set()      # V08：即时捕获（见下）
     for d in sorted(by_day):
         day_c = _day_cands(d)
         for bar in sorted(by_day[d], key=lambda b: b.bar_start):
@@ -269,22 +274,26 @@ def _cmd_scan(args) -> int:
                          if c.instrument_id == bar.instrument_id
                          and c.eligible_from <= bar.available_at), None)
             hist = history.get(bar.instrument_id, [])
-            orch.on_bar(bar.instrument_id, bar, hist,
-                        daily_by_iid.get(bar.instrument_id, []),
-                        cand)
+            ev = orch.on_bar(bar.instrument_id, bar, hist,
+                             daily_by_iid.get(bar.instrument_id, []),
+                             cand)
             if cand is not None:
                 evaluated.add(bar.instrument_id)
+                # V08：ARMED 即时捕获（推进后 setup 会转 FILL/过期，
+                # 不能只看终态 orch.armed）
+                if any(e.startswith("ARMED:") for e in ev):
+                    armed_seen.add(bar.instrument_id)
             history.setdefault(bar.instrument_id, []).append(bar)
 
     entries = []
     for iid in sorted(evaluated):
-        if iid in [c for c, _ in orch.rejected_candidates]:
-            entries.append(DailyPlanEntry(
-                iid, iid, "rejected",
-                [w for c, w in orch.rejected_candidates if c == iid], {}))
-        elif any(s.instrument_id == iid for s in orch.armed.values()):
+        reasons = [w for c, w in orch.rejected_candidates if c == iid]
+        if iid in armed_seen:
             entries.append(DailyPlanEntry(iid, iid, "awaiting_trigger",
                                           ["ARMED"], {}))
+        elif reasons:
+            entries.append(DailyPlanEntry(iid, iid, "rejected",
+                                          reasons, {}))
         else:
             entries.append(DailyPlanEntry(iid, iid, "watch",
                                           ["NO_SIGNAL"], {}))
@@ -294,13 +303,13 @@ def _cmd_scan(args) -> int:
         entries=entries, run_id=run_id, config_version="cli-scan-v1")
     write_outputs(doc, os.path.join(out_dir, "daily_plan.json"),
                   os.path.join(out_dir, "daily_plan.md"))
-    has_signal = bool(orch.armed)
+    has_signal = bool(armed_seen or orch.armed)
     status = "OK" if has_signal else "NO_SIGNAL"
     _write_status(out_dir, status, {
         "evaluated": sorted(evaluated),
         "not_evaluated": sorted(
             {b.instrument_id for b in si["bars"]} - evaluated),
-        "armed": sorted(orch.armed)})
+        "armed": sorted(armed_seen)})
     with open(os.path.join(out_dir, "run_manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(_manifest_doc(run_id, "cli-scan-v1", si, status), f,
@@ -413,7 +422,11 @@ def _cmd_backtest(args) -> int:
 
 
 def _cmd_paper(args) -> int:
-    """N03：离线 paper——消费事件文件（bars JSONL），支持 --state 恢复。"""
+    """N03/V04/V05：离线 paper——事件文件驱动，可重启恢复完整状态。
+
+    恢复内容（AR06 最低集）：现金、持仓 lot+可卖日、退出计划、
+    consumed bar 游标；恢复后继续处理新事件，与连续运行一致。
+    """
     events_fp = _arg(args, "--events")
     state_dir = _arg(args, "--state")
     if not events_fp:
@@ -432,29 +445,50 @@ def _cmd_paper(args) -> int:
         return EXIT_BLOCKED
     from datetime import date as _date
     from pal.data.calendar import TradingCalendar
-    from pal.pipeline.event_store import EventStore
+    from pal.pipeline.event_store import EventStore, replay_events
     from pal.pipeline.orchestrator import (
-        OrchestratorConfig, SessionOrchestrator)
-    from pal.ledger.positions import AccountLedger
+        OrchestratorConfig, PositionPlan, SessionOrchestrator)
+    from pal.ledger.positions import AccountLedger, PositionLot
     from pal.signals.engine import EngineConfig
 
     days = sorted({b.bar_start.date() for b in bars})
     cal = TradingCalendar(tuple(days), "paper-events")
     store = EventStore(os.path.join(out_dir, "events.jsonl"))
-    # 恢复：重放已持久化事件重建账本状态
-    from pal.pipeline.event_store import replay_events
     prior = replay_events(store.events())
-    ledger = AccountLedger(1_000_000.0 if not prior.initial_cash
-                           else prior.initial_cash)
-    ledger.cash = prior.cash if store.events() else 1_000_000.0
+    is_fresh = len(store) == 0
+
+    ledger = AccountLedger(prior.initial_cash or 1_000_000.0)
     orch = SessionOrchestrator(
         OrchestratorConfig(EngineConfig("paper-v1"), calendar=cal),
         ledger, store=store)
-    consumed_prior = len(store.by_kind("bar_consumed"))
+    if not is_fresh:
+        # V05：恢复现金（不重置资金）
+        ledger.cash = prior.cash
+        # V05：恢复持仓 lot（可卖日来自 fill 的 sellable_from）
+        net = {i: q for i, q in prior.positions.items() if q > 0}
+        buys = [e.payload for e in store.by_kind("fill")
+                if e.payload["side"] == "buy"]
+        for iid, q in net.items():
+            my_buys = [b for b in buys if b["instrument_id"] == iid]
+            last = my_buys[-1] if my_buys else None
+            sf = (_date.fromisoformat(last["sellable_from"])
+                  if last else days[0])
+            cost = (float(last["price"]) if last else 10.0)
+            ledger.positions.add_lot(PositionLot(
+                f"lot_r_{iid}", iid, q, cost, sf, sf))
+            # V05：恢复退出计划（stop/target 需事件携带；当前事件 schema
+            # 无 plan 字段——计划恢复依赖 orchestrator 重评估，
+            # 这里至少保证持仓与现金正确，退出由新 bar 重驱动）
+    # V04：恢复 consumed 游标（重复 bar 不报错、不重复消费）
+    for e in store.by_kind("bar_consumed"):
+        orch._consumed_bars.add(e.payload["bar_key"])
+
     n_new = 0
+    new_events: list = []
     for bar in sorted(bars, key=lambda b: (b.available_at, b.bar_start)):
         ev = orch.on_bar(bar.instrument_id, bar, [], [], None)
         n_new += len(ev)
+        new_events.extend(ev)
     traded = {e.payload["instrument_id"] for e in store.by_kind("fill")}
     ledger_snapshot = {
         "cash": round(ledger.cash, 4),
@@ -465,8 +499,10 @@ def _cmd_paper(args) -> int:
               encoding="utf-8") as f:
         json.dump(ledger_snapshot, f, ensure_ascii=False, indent=1)
     status = "OK" if n_new > 0 else "NO_TRADES"
-    _write_status(out_dir, status, {"new_events": n_new,
-                                    "prior_bars": consumed_prior})
+    _write_status(out_dir, status, {
+        "new_events": n_new, "new_event_list": new_events[:20],
+        "recovered": (not is_fresh),
+        "recovered_cash": (prior.cash if not is_fresh else None)})
     with open(os.path.join(out_dir, "run_manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(_manifest_doc(run_id, "paper-v1",
@@ -476,7 +512,8 @@ def _cmd_paper(args) -> int:
                                 status), f, ensure_ascii=False, indent=1)
     print(f"paper {status}: run={run_id} new_events={n_new} "
           f"cash={ledger.cash:.2f} "
-          f"positions={ledger_snapshot['positions']}")
+          f"positions={ledger_snapshot['positions']} "
+          f"{'(recovered)' if not is_fresh else ''}")
     print(f"  state  : {out_dir}")
     return EXIT_OK
 

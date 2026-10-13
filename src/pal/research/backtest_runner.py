@@ -61,6 +61,8 @@ class BacktestRunner:
         self.initial_cash = initial_cash
         self.ledger = AccountLedger(initial_cash)
         self.orch = SessionOrchestrator(config, self.ledger)
+        # V03/AR03：每票跨 run 历史窗口（分日增量 = 整段回放）
+        self._history: Dict[str, List[Bar]] = {}
 
     def run(self, days: Sequence[BacktestDay]) -> BacktestResult:
         res = BacktestResult()
@@ -68,8 +70,8 @@ class BacktestRunner:
             return res
         # 只收集本次新增（多次 run 累积在 orchestrator 里，不重复抄回）
         nav_offset = len(self.orch.nav_series)
-        # N04/A03：每票维护跨日历史窗口（突破需要 ≥22 根，单日 8 根不够）
-        history: Dict[str, List[Bar]] = {}
+        # V03：历史窗口在实例上持久——逐日 run 与整段 run 结果一致
+        history = self._history
         # N04：按 available_at 投递（因果时钟，非 bar_start）
         all_bars = [b for day in days for b in day.bars_30m]
         all_bars.sort(key=lambda b: (b.available_at, b.bar_start))
