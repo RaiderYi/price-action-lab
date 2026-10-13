@@ -96,7 +96,8 @@ class TradingRuntime:
 
     def __init__(self, snap_info: Dict, initial_cash: float = 1_000_000.0,
                  store: Optional[EventStore] = None,
-                 engine_version: str = "runtime-v1"):
+                 engine_version: str = "runtime-v1",
+                 ledger: Optional[AccountLedger] = None):
         self.snap = snap_info
         man = snap_info["manifest"]
         # V 补充（蓝图附录A"其他"）：日历尊重 manifest.trading_days，
@@ -106,7 +107,8 @@ class TradingRuntime:
             tuple(sorted({b.bar_start.date() for b in snap_info["bars"]}))
         self.calendar = TradingCalendar(
             td, man.get("calendar_version", "snapshot-derived"))
-        self.ledger = AccountLedger(initial_cash)
+        # R6-07：paper 恢复场景注入已重放的账本（与 backtest 同内核）
+        self.ledger = ledger if ledger is not None             else AccountLedger(initial_cash)
         self.store = store
         cfg = OrchestratorConfig(EngineConfig(engine_version),
                                  calendar=self.calendar)
@@ -129,11 +131,16 @@ class TradingRuntime:
             iid, ("static_pool",), at, at, None)
             for iid in self.snap["manifest"].get("instruments", {})]
 
-    # ── 事件驱动（多票确定性批次：available_at 排序）──
+    # ── 事件驱动（多票确定性批次）──
+    # R6-08：排序键含 instrument_id 字典序平局裁决——同刻多票按票号
+    # 排序，输入到达顺序不再改变处理顺序（预注册时间优先规则）。
+    # 批内资金/名额竞争由 allocator 按 (score desc, setup_id asc)
+    # 确定性分配（T07 协议），与到达顺序无关。
     def process_bars(self, bars: Sequence[Bar]) -> List[str]:
         events: List[str] = []
         for bar in sorted(bars,
-                          key=lambda b: (b.available_at, b.bar_start)):
+                          key=lambda b: (b.available_at, b.bar_start,
+                                         b.instrument_id)):
             d = bar.bar_start.date()
             cand = next((c for c in self.day_candidates(d)
                          if c.instrument_id == bar.instrument_id

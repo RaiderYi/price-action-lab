@@ -214,6 +214,10 @@ def _candidates_from_snapshot(snap_info: dict):
 
 
 def _cmd_scan(args) -> int:
+    """R6-07：盘后扫描——复用统一 TradingRuntime（与 backtest 同一
+    决策/订单/风控/账本内核），scan 只做决策投影：无 store、无持久化、
+    无账户副作用，输出候选状态（awaiting_trigger/watch/rejected）。
+    """
     snap = _arg(args, "--snapshot")
     if not snap:
         print("usage: pal scan --snapshot DIR [--out DIR]", file=sys.stderr)
@@ -226,65 +230,29 @@ def _cmd_scan(args) -> int:
         _write_status(out_dir, "BLOCKED", {"reason": "无行情"})
         print("BLOCKED: 快照无 bars_*.jsonl")
         return EXIT_BLOCKED
-    from datetime import date as _date
-    from pal.data.calendar import TradingCalendar
-    from pal.pipeline.orchestrator import (
-        OrchestratorConfig,
-        SessionOrchestrator,
-    )
-    from pal.ledger.positions import AccountLedger
-    from pal.signals.engine import EngineConfig
     from pal.reporting.daily_plan import (
         DailyPlanEntry, render_daily_plan, write_outputs)
+    from pal.runtime.service import TradingRuntime
 
-    cands = _candidates_from_snapshot(si)
-    if not cands:
-        _write_status(out_dir, "NO_CANDIDATES", {"reason": "快照无候选源"})
-        print("NO_CANDIDATES: manifest.instruments 为空，策略未评估")
-        return EXIT_NO_TRADES
-    # N03：候选按交易日刷新（静态池每日产出，eligible=当日00:00）
-    from datetime import datetime as _dtm, timedelta as _td
-    from pal.selection.providers import Candidate as _Cand
+    rt = TradingRuntime(si, 1_000_000.0, engine_version="cli-scan-v1")
+    orch = rt.orch
+    # V08：ARMED/FILL 即时捕获（setup 成交/过期后从 orch.armed 消失，
+    # 必须在每根 bar 处理时即时记录归属票）
+    armed_seen: set = set()
+    _orig_on_bar = orch.on_bar
 
-    def _day_cands(d):
-        at = _dtm.fromisoformat(d.isoformat() + "T00:00:00+08:00")
-        return [_Cand(f"cand_{iid.replace('.', '_')}_{d.isoformat()}",
-                      iid, ("static_pool",), at, at, None)
-                for iid in si["manifest"].get("instruments", {})]
+    def _capture_on_bar(iid, bar, *a, **k):
+        ev = _orig_on_bar(iid, bar, *a, **k)
+        for e in ev:
+            if e.startswith(("ARMED:", "FILL:")):
+                armed_seen.add(iid)
+        return ev
 
-    days = sorted({b.bar_start.date() for b in si["bars"]})
-    cal = TradingCalendar(tuple(days), si["manifest"].get(
-        "calendar_version", "snapshot-derived"))
-    by_day = {}
-    for b in si["bars"]:
-        by_day.setdefault(b.bar_start.date(), []).append(b)
-    daily_by_iid = {}
-    for b in si["daily"]:
-        daily_by_iid.setdefault(b.instrument_id, []).append(b)
-
-    cfg = OrchestratorConfig(EngineConfig("cli-scan-v1"), calendar=cal)
-    orch = SessionOrchestrator(cfg, AccountLedger(1_000_000.0))
-    history = {}
-    evaluated = set()
-    armed_seen = set()      # V08：即时捕获（见下）
-    for d in sorted(by_day):
-        day_c = _day_cands(d)
-        for bar in sorted(by_day[d], key=lambda b: b.bar_start):
-            cand = next((c for c in day_c
-                         if c.instrument_id == bar.instrument_id
-                         and c.eligible_from <= bar.available_at), None)
-            hist = history.get(bar.instrument_id, [])
-            ev = orch.on_bar(bar.instrument_id, bar, hist,
-                             daily_by_iid.get(bar.instrument_id, []),
-                             cand)
-            if cand is not None:
-                evaluated.add(bar.instrument_id)
-                # V08：ARMED 即时捕获（推进后 setup 会转 FILL/过期，
-                # 不能只看终态 orch.armed）
-                if any(e.startswith("ARMED:") for e in ev):
-                    armed_seen.add(bar.instrument_id)
-            history.setdefault(bar.instrument_id, []).append(bar)
-
+    orch.on_bar = _capture_on_bar
+    ev_all = rt.process_bars(si["bars"])
+    evaluated = {b.instrument_id for b in si["bars"]
+                 if rt.day_candidates(b.bar_start.date())}
+    # 触发成交的票也算 awaiting 过（scan 语义：曾有武装计划）
     entries = []
     for iid in sorted(evaluated):
         reasons = [w for c, w in orch.rejected_candidates if c == iid]
@@ -297,24 +265,24 @@ def _cmd_scan(args) -> int:
         else:
             entries.append(DailyPlanEntry(iid, iid, "watch",
                                           ["NO_SIGNAL"], {}))
-    # A02：未评估的票不算 watch（区分"未评估"与"评估后无信号"）
     doc = render_daily_plan(
         plan_date=si["manifest"].get("asof_date", "unknown"),
         entries=entries, run_id=run_id, config_version="cli-scan-v1")
     write_outputs(doc, os.path.join(out_dir, "daily_plan.json"),
                   os.path.join(out_dir, "daily_plan.md"))
-    has_signal = bool(armed_seen or orch.armed)
+    has_signal = bool(armed_seen)
     status = "OK" if has_signal else "NO_SIGNAL"
     _write_status(out_dir, status, {
         "evaluated": sorted(evaluated),
         "not_evaluated": sorted(
             {b.instrument_id for b in si["bars"]} - evaluated),
-        "armed": sorted(armed_seen)})
+        "armed": sorted(armed_seen),
+        "account_side_effects": False})
     with open(os.path.join(out_dir, "run_manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(_manifest_doc(run_id, "cli-scan-v1", si, status), f,
                   ensure_ascii=False, indent=1)
-    print(f"scan {status}: run={run_id} armed={len(orch.armed)} "
+    print(f"scan {status}: run={run_id} armed={len(armed_seen)} "
           f"evaluated={len(evaluated)}")
     print(f"  report: {os.path.join(out_dir, 'daily_plan.md')}")
     return EXIT_OK
@@ -421,10 +389,12 @@ def _cmd_backtest(args) -> int:
 
 
 def _cmd_paper(args) -> int:
-    """N03/V04/V05：离线 paper——事件文件驱动，可重启恢复完整状态。
+    """N03/V04/V05 + R6-04/R6-07：离线 paper——统一 Runtime 驱动。
 
-    恢复内容（AR06 最低集）：现金、持仓 lot+可卖日、退出计划、
-    consumed bar 游标；恢复后继续处理新事件，与连续运行一致。
+    恢复（R6-04）：按真实 fill→lot→plan 关联逐笔重放每笔买卖及
+    剩余数量——恢复现金、lot（含费成本+可卖日）、全部退出计划
+    （含剩余量）、consumed 游标、OMS 订单/占用。多批持仓每批
+    独立恢复，不再压成一个 lot 取最后一笔买入。
     """
     events_fp = _arg(args, "--events")
     state_dir = _arg(args, "--state")
@@ -442,66 +412,187 @@ def _cmd_paper(args) -> int:
     if not bars:
         _write_status(out_dir, "BLOCKED", {"reason": "事件文件无 bar"})
         return EXIT_BLOCKED
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dtm
     from pal.data.calendar import TradingCalendar
     from pal.pipeline.event_store import EventStore, replay_events
     from pal.pipeline.orchestrator import (
-        OrchestratorConfig, PositionPlan, SessionOrchestrator)
+        ArmedSetup, OrchestratorConfig, PositionPlan, SessionOrchestrator)
     from pal.ledger.positions import AccountLedger, PositionLot
     from pal.signals.engine import EngineConfig
+    from pal.portfolio.risk import PaperDefaults
 
     days = sorted({b.bar_start.date() for b in bars})
     cal = TradingCalendar(tuple(days), "paper-events")
     store = EventStore(os.path.join(out_dir, "events.jsonl"))
     prior = replay_events(store.events())
     is_fresh = len(store) == 0
+    # R6-07：--snapshot 提供候选/日线/日历背景 → 与 backtest 同一
+    # TradingRuntime 决策内核；缺省时保持纯事件驱动（无候选）。
+    snap_dir = _arg(args, "--snapshot")
+    # R6-07：日历优先取快照 manifest.trading_days（事件文件日期可能
+    # 只是快照的子集——T+1 next_trading_day 查询会越界）
+    if snap_dir is not None:
+        _snap_man = json.load(open(
+            os.path.join(snap_dir, "manifest.json"), encoding="utf-8"))
+        _tds = _snap_man.get("trading_days") or []
+        if _tds:
+            cal = TradingCalendar(
+                tuple(_date.fromisoformat(x) for x in _tds),
+                _snap_man.get("calendar_version", "paper-snapshot"))
 
     ledger = AccountLedger(prior.initial_cash or 1_000_000.0)
+    if not is_fresh:
+        # V05：恢复现金（不重置资金）
+        ledger.cash = prior.cash
+        # R6-04：按 fill 逐笔重放 buy→lot + 卖出扣减 + 退出计划。
+        # 每笔买入 = 一个独立 lot（fill_id 派生 lot_id），
+        # 计划随 fill.plan 恢复并扣减已执行卖出量。
+        all_fills = [e.payload for e in store.by_kind("fill")]
+        sold_by_lot: dict = {}
+        for f in all_fills:
+            if f.get("side") == "sell":
+                lid = f.get("lot_id", "")
+                if lid:
+                    sold_by_lot[lid] = sold_by_lot.get(lid, 0) + int(f["qty"])
+        plans_by_iid: dict = {}
+        for f in all_fills:
+            if f.get("side") != "buy":
+                continue
+            iid = f["instrument_id"]
+            qty = int(f["qty"])
+            px = float(f["price"])
+            comm = float(f.get("commission", 0.0))
+            sf = _date.fromisoformat(f["sellable_from"])
+            lot_id = f.get("lot_id") or f"lot_{iid}_{f['fill_id']}"
+            sold = sold_by_lot.get(lot_id, 0)
+            remaining = qty - sold
+            if remaining > 0:
+                ledger.positions.add_lot(PositionLot(
+                    lot_id, iid, remaining, (qty * px + comm) / qty,
+                    _date.fromisoformat(
+                        f.get("plan", {}).get(
+                            "entry_date", f["sellable_from"])), sf))
+            plan_p = f.get("plan")
+            if plan_p:
+                plan = PositionPlan(
+                    iid, plan_p["setup_id"], px,
+                    float(plan_p["stop"]), float(plan_p["target"]),
+                    _date.fromisoformat(plan_p["entry_date"]),
+                    int(plan_p["qty"]), lot_id=lot_id)
+                # 卖出已消耗部分从计划剩余量里扣
+                plan.remaining_qty = max(0, int(plan_p["qty"]) - sold)
+                if plan.remaining_qty > 0:
+                    plans_by_iid.setdefault(iid, []).append(plan)
+        # 无 lot_id 的旧格式卖出：按 FIFO 从最早 lot 扣
+        for f in all_fills:
+            if f.get("side") == "sell" and not f.get("lot_id"):
+                iid = f["instrument_id"]
+                rem = int(f["qty"])
+                lots = ledger.positions._lots.get(iid, [])
+                for lot in lots:
+                    if rem <= 0:
+                        break
+                    take = min(lot.qty, rem)
+                    lot.qty -= take
+                    rem -= take
+                ledger.positions._lots[iid] = [
+                    l for l in lots if l.qty > 0]
+        for iid, plans in plans_by_iid.items():
+            if ledger.positions.total_qty(iid) > 0:
+                pass    # orch 构造后统一注入（见下）
+
     orch = SessionOrchestrator(
         OrchestratorConfig(EngineConfig("paper-v1"), calendar=cal),
         ledger, store=store)
     if not is_fresh:
-        # V05：恢复现金（不重置资金）
-        ledger.cash = prior.cash
-        # V05：恢复持仓 lot（可卖日来自 fill 的 sellable_from）
-        net = {i: q for i, q in prior.positions.items() if q > 0}
-        buys = [e.payload for e in store.by_kind("fill")
-                if e.payload["side"] == "buy"]
-        for iid, q in net.items():
-            my_buys = [b for b in buys if b["instrument_id"] == iid]
-            last = my_buys[-1] if my_buys else None
-            sf = (_date.fromisoformat(last["sellable_from"])
-                  if last else days[0])
-            cost = (float(last["price"]) if last else 10.0)
-            plan_p = last.get("plan") if last else None
-            acquired = (_date.fromisoformat(plan_p["entry_date"])
-                        if plan_p else sf)
-            ledger.positions.add_lot(PositionLot(
-                f"lot_r_{iid}", iid, q, cost, acquired, sf))
-            # AR05：退出计划随 fill 的 plan 字段恢复（stop/target/批次）
-            plan_p = last.get("plan") if last else None
-            if plan_p:
-                orch.position_plans.setdefault(iid, [])
-                existing = orch.position_plans[iid]
-                if not isinstance(existing, list):
-                    existing = [existing]
-                from pal.pipeline.orchestrator import PositionPlan
-                existing.append(PositionPlan(
-                    iid, plan_p["setup_id"], float(last["price"]),
-                    float(plan_p["stop"]), float(plan_p["target"]),
-                    _date.fromisoformat(plan_p["entry_date"]),
-                    int(plan_p["qty"])))
-                orch.position_plans[iid] = existing
+        pend = plans_by_iid
+        for iid, plans in pend.items():
+            existing = orch.position_plans.get(iid)
+            if existing is None:
+                orch.position_plans[iid] = plans
+            elif isinstance(existing, list):
+                existing.extend(plans)
+            else:
+                orch.position_plans[iid] = [existing] + plans
     # V04：恢复 consumed 游标（重复 bar 不报错、不重复消费）
+    # R6-04：bar_consumed 携带完整 bar → 重建行情历史引用，
+    # 使恢复后的引擎评估窗口与连续运行一致
+    from pal.data.bars import Bar as _Bar
+    hist_by_iid: dict = {}
     for e in store.by_kind("bar_consumed"):
         orch._consumed_bars.add(e.payload["bar_key"])
+        b = e.payload.get("bar")
+        if b:
+            hist_by_iid.setdefault(b["instrument_id"], []).append(_Bar(
+                b["instrument_id"], b["timeframe"],
+                _dtm.fromisoformat(b["bar_start"]),
+                _dtm.fromisoformat(b["bar_end"]),
+                _dtm.fromisoformat(b["available_at"]),
+                b["open"], b["high"], b["low"], b["close"],
+                b["volume"], b.get("amount", 0.0),
+                b.get("is_final", True)))
+    # R6-04：恢复 armed/setup 状态（最后事件优先——被删除的 setup
+    # 按 setup_removed 剔除）
+    removed = {e.payload["setup_id"]
+               for e in store.by_kind("setup_removed")}
+    last_armed: dict = {}
+    for e in store.by_kind("armed"):
+        last_armed[e.payload["setup_id"]] = e.payload
+    for sid, a in last_armed.items():
+        if sid not in removed and sid not in orch.armed:
+            orch.armed[sid] = ArmedSetup(
+                sid, a["instrument_id"], a["family"],
+                float(a["entry"]), float(a["stop"]), float(a["target"]),
+                _dtm.fromisoformat(a["armed_at"]))
 
     n_new = 0
     new_events: list = []
-    for bar in sorted(bars, key=lambda b: (b.available_at, b.bar_start)):
-        ev = orch.on_bar(bar.instrument_id, bar, [], [], None)
-        n_new += len(ev)
-        new_events.extend(ev)
+    if snap_dir is not None and is_fresh:
+        # 统一路径：TradingRuntime 处理同一事件文件（候选/日线来自快照）
+        from pal.runtime.service import TradingRuntime
+        snap_bars = _load_bars_file(events_fp)
+        si = {"manifest": _load_snapshot(snap_dir)["manifest"],
+              "bars": snap_bars,
+              "daily": _load_snapshot(snap_dir)["daily"]}
+        rt = TradingRuntime(si, 1_000_000.0, store=store,
+                            engine_version="paper-v1")
+        all_ev = rt.process_bars(snap_bars)
+        n_new = len(all_ev)
+        new_events = list(all_ev)
+        ledger = rt.ledger
+        orch = rt.orch
+    else:
+        # R6-07：--snapshot 时恢复态同样提供候选/日线背景——
+        # 与 backtest 同一决策输入契约（缺省纯事件流保持原语义）
+        snap_si = (_load_snapshot(snap_dir) if snap_dir is not None
+                   else None)
+        snap_daily: dict = {}
+        if snap_si is not None:
+            from pal.selection.providers import Candidate as _C
+            for b in snap_si["daily"]:
+                snap_daily.setdefault(b.instrument_id, []).append(b)
+
+        def _cand_for(bar):
+            if snap_si is None:
+                return None
+            man = snap_si["manifest"]
+            if bar.instrument_id not in man.get("instruments", {}):
+                return None
+            at = _dtm.fromisoformat(
+                bar.bar_start.date().isoformat() + "T00:00:00+08:00")
+            return _C(f"cand_{bar.instrument_id.replace('.', '_')}"
+                         f"_{bar.bar_start.date().isoformat()}",
+                         bar.instrument_id, ("static_pool",), at, at, None)
+
+        for bar in sorted(bars, key=lambda b: (b.available_at,
+                                               b.bar_start)):
+            hist = hist_by_iid.get(bar.instrument_id, [])
+            ev = orch.on_bar(bar.instrument_id, bar, hist,
+                             snap_daily.get(bar.instrument_id, []),
+                             _cand_for(bar))
+            n_new += len(ev)
+            new_events.extend(ev)
+            hist_by_iid.setdefault(bar.instrument_id, []).append(bar)
     traded = {e.payload["instrument_id"] for e in store.by_kind("fill")}
     ledger_snapshot = {
         "cash": round(ledger.cash, 4),

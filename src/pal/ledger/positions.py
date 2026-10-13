@@ -75,6 +75,25 @@ class PositionBook:
         self._lots[instrument_id] = [l for l in self._lots[instrument_id] if l.qty > 0]
         return consumed
 
+    def reduce_by_lot(self, instrument_id: str, qty: int, on: date,
+                      lot_id: str) -> List[PositionLot]:
+        """R6-05：按 lot_id 精确扣减——退出计划不串扣批次。"""
+        if qty <= 0:
+            raise DomainValidationError("卖出数量必须为正")
+        lot = next((l for l in self._lots.get(instrument_id, [])
+                    if l.lot_id == lot_id), None)
+        if lot is None:
+            raise DomainValidationError(f"lot 不存在: {lot_id}")
+        avail = lot.sellable_qty(on)
+        if qty > avail:
+            raise DomainValidationError(
+                f"本 lot 可卖量不足: 欲卖{qty}, lot {lot_id} 可卖{avail}"
+                f" @{on}（T+1/不串扣其他批次）")
+        lot.qty -= qty
+        self._lots[instrument_id] = [l for l in self._lots.get(
+            instrument_id, []) if l.qty > 0]
+        return [lot]
+
     def reduce_batch(self, instrument_id: str, qty: int, on: date,
                      acquired_date: date) -> List[PositionLot]:
         """V07/AR07：按买入批次卖出——只动 acquired_date 匹配的 lot。
@@ -138,7 +157,8 @@ class AccountLedger:
 
     def buy(self, instrument_id: str, qty: int, price: float,
             trade_date: date, rules: MarketRuleSet,
-            t1_next_trading_day: date) -> None:
+            t1_next_trading_day: date,
+            lot_id: str = "") -> None:
         if qty <= 0 or price <= 0:
             raise DomainValidationError("买入参数非法")
         # R10：T+1 边界强制——sellable_from 必须 > 买入日
@@ -155,8 +175,13 @@ class AccountLedger:
         self._record("buy", -gross, f"{instrument_id} {qty}@{price}")
         self._record("commission", -commission, f"buy {instrument_id}")
         self._fee_paid["commission"] += commission
+        # R6-05：lot_id 由唯一 fill 派生（调用方传入）；缺省保留
+        # 旧格式（日期+数量）以兼容历史测试
+        if not lot_id:
+            lot_id = (f"lot_{instrument_id}_"
+                      f"{trade_date.isoformat()}_{qty}")
         self.positions.add_lot(PositionLot(
-            lot_id=f"lot_{instrument_id}_{trade_date.isoformat()}_{qty}",
+            lot_id=lot_id,
             instrument_id=instrument_id, qty=qty,
             cost_price=total_cost / qty, acquired_date=trade_date,
             sellable_from=t1_next_trading_day))
@@ -177,6 +202,15 @@ class AccountLedger:
             raise DomainValidationError("卖出参数非法")
         self.positions.reduce_batch(instrument_id, qty, trade_date,
                                     acquired_date)
+        return self._post_sell(instrument_id, qty, price, trade_date, rules)
+
+    def sell_by_lot(self, instrument_id: str, qty: int, price: float,
+                    trade_date: date, rules: MarketRuleSet,
+                    lot_id: str) -> float:
+        """R6-05：按 lot 卖出（退出计划专用——精确批次关联）。"""
+        if qty <= 0 or price <= 0:
+            raise DomainValidationError("卖出参数非法")
+        self.positions.reduce_by_lot(instrument_id, qty, trade_date, lot_id)
         return self._post_sell(instrument_id, qty, price, trade_date, rules)
 
     def _post_sell(self, instrument_id: str, qty: int, price: float,

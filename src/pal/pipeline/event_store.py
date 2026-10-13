@@ -1,11 +1,13 @@
 """第三轮复审 T08：事件仓库——订单/成交/账本的持久化与恢复。
 
-复审验收要求：
-- 保存完整因果关联 run→candidate→setup→plan→order→fill→lot→exit；
-- 订单与成交有唯一约束（重复回报幂等，不重复记账）；
-- 失败时不能出现"订单已成交但账本未落地"的半状态（事务边界）；
-- checkpoint 前/后注入中断，重启状态与不中断运行一致；
-- 每天订单、成交、现金、持仓可对账（reconcile）。
+第六轮 R6-03 整改：
+- append_atomic()：一笔业务处理的全部事件（order/fill/游标/risk_state）
+  单次 write + flush + fsync 落盘，形成原子提交边界——写失败时
+  盘上与内存均无半状态，重试可完整重新处理；
+- 唯一性校验在写盘之前对整批预检（含批内互斥），写盘成功后才
+  更新内存去重索引——不再出现"索引已污染但事件未落盘"；
+- 相同 fill_id/order_id 重放幂等跳过（重试语义），相同 ID 不同
+  载荷报 EventConflictError。
 
 设计：append-only JSONL 事件流 + 确定性重放。
 - 每个事件带全局单调 seq；
@@ -17,8 +19,8 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pal.domain.models import DomainValidationError
 
@@ -27,10 +29,14 @@ class EventConflictError(RuntimeError):
     """重复/冲突事件（唯一约束违反）。"""
 
 
+# 原子批中的一个待提交条目：(kind, payload, ts)
+JournalEntry = Tuple[str, Dict[str, Any], str]
+
+
 @dataclass(frozen=True)
 class StoreEvent:
-    seq: int
-    kind: str          # bar_consumed | order | fill | ledger_tx | nav | note
+    seq: int          # bar_consumed | order | fill | ledger_tx | nav | note | risk_state
+    kind: str
     payload: Dict[str, Any]
     ts: str = ""       # ISO 事件时间（业务时钟，非墙钟）
 
@@ -48,76 +54,109 @@ class StoreEvent:
 class EventStore:
     """append-only 事件仓库（JSONL 落盘 + 唯一性约束 + 重放）。
 
-    唯一约束：
-    - seq 单调（重放相同 seq 视为重复交付，幂等跳过）；
-    - kind+key 唯一（如 fill_id）：同 key 二次 append → EventConflictError。
+    唯一约束（分域，一单多 fill 合法）：
+    - fill 事件按 fill_id 唯一；
+    - order 事件按 order_id 唯一；
+    - bar_consumed 按 bar_key 唯一。
     """
 
-    def __init__(self, path: Optional[str] = None,
-                 unique_keys: Sequence[str] = ("fill_id", "order_id",
-                                               "bar_key")):
+    def __init__(self, path: Optional[str] = None):
         self.path = path
         self._events: List[StoreEvent] = []
         self._seq = 0
-        self._uniq: Dict[str, str] = {}     # f"{kind}|{key}" -> seq
-        self._unique_fields = tuple(unique_keys)
-        # A07：fill 事件按 fill_id 唯一；order_id 是可重复关联键，
-        # 只有 order 事件本身按 order_id 唯一（一单多笔成交合法）
-        self._uniq_fill = set()
-        self._uniq_order = set()
+        self._uniq_fill: set = set()
+        self._uniq_order: set = set()
+        self._uniq_bar: set = set()
         self._lock = threading.Lock()
         if path and os.path.exists(path):
             self._load(path)
 
+    # ── 唯一性预检（不动任何状态）──
+    def _check_unique(self, kind: str, payload: Dict[str, Any],
+                      seen_fill: set, seen_order: set,
+                      seen_bar: set) -> None:
+        if kind == "fill":
+            fid = payload.get("fill_id")
+            if fid is not None and (fid in self._uniq_fill
+                                    or fid in seen_fill):
+                raise EventConflictError(f"重复成交回报: fill_id={fid}")
+        elif kind == "order":
+            oid = payload.get("order_id")
+            if oid is not None and (oid in self._uniq_order
+                                    or oid in seen_order):
+                raise EventConflictError(f"重复订单事件: order_id={oid}")
+        elif kind == "bar_consumed":
+            bk = payload.get("bar_key")
+            if bk is not None and (bk in self._uniq_bar or bk in seen_bar):
+                raise EventConflictError(f"重复bar事件: {bk}")
+
     # ── 写入 ──
     def append(self, kind: str, payload: Dict[str, Any],
                ts: str = "") -> StoreEvent:
-        with self._lock:
-            # A07：fill 用 fill_id 去重；order 用 order_id；
-            # bar_consumed 用 bar_key（各自分域，一单多 fill 合法）
-            if kind == "fill":
-                fid = payload.get("fill_id")
-                if fid is not None and fid in self._uniq_fill:
-                    raise EventConflictError(
-                        f"重复成交回报: fill_id={fid}")
-                if fid is not None:
-                    self._uniq_fill.add(fid)
-            elif kind == "order":
-                oid = payload.get("order_id")
-                if oid is not None and oid in self._uniq_order:
-                    raise EventConflictError(
-                        f"重复订单事件: order_id={oid}")
-                if oid is not None:
-                    self._uniq_order.add(oid)
-            elif kind == "bar_consumed":
-                bk = payload.get("bar_key")
-                if bk is not None and any(
-                        e.kind == "bar_consumed"
-                        and e.payload.get("bar_key") == bk
-                        for e in self._events):
-                    raise EventConflictError(f"重复bar事件: {bk}")
-            self._seq += 1
-            ev = StoreEvent(self._seq, kind, payload, ts)
-            if self.path:
-                self._fsync_append(ev)
-            self._events.append(ev)
-            return ev
+        """单事件提交（内部走同一原子路径）。"""
+        return self.append_atomic([(kind, payload, ts)])[0]
 
-    def _fsync_append(self, ev: StoreEvent) -> None:
-        # write-ahead：先落盘再进内存（崩溃时事件已在盘上）
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(ev.to_json() + "\n")
+    def append_atomic(self, entries: Sequence[JournalEntry]
+                      ) -> List[StoreEvent]:
+        """R6-03：一批业务事件原子提交。
+
+        - 先对整批做唯一性预检（含批内互斥）——冲突时零副作用抛错；
+        - 全部序列化为一个字节块，单次 write + flush + fsync；
+        - 落盘成功后才追加内存事件表并更新去重索引。
+        写失败（OSError 等）时：盘上无新增完整行、内存索引未变，
+        调用方可整体重试。
+        """
+        with self._lock:
+            seen_fill: set = set()
+            seen_order: set = set()
+            seen_bar: set = set()
+            for kind, payload, ts in entries:
+                self._check_unique(kind, payload,
+                                   seen_fill, seen_order, seen_bar)
+                if kind == "fill" and payload.get("fill_id") is not None:
+                    seen_fill.add(payload["fill_id"])
+                elif kind == "order" and payload.get("order_id") is not None:
+                    seen_order.add(payload["order_id"])
+                elif (kind == "bar_consumed"
+                        and payload.get("bar_key") is not None):
+                    seen_bar.add(payload["bar_key"])
+            seq_base = self._seq
+            blob = "".join(
+                StoreEvent(seq_base + i + 1, kind, payload, ts).to_json()
+                + "\n"
+                for i, (kind, payload, ts) in enumerate(entries)
+            ).encode("utf-8")
+            if self.path and blob:
+                self._fsync_write(blob)
+            out: List[StoreEvent] = []
+            for i, (kind, payload, ts) in enumerate(entries):
+                ev = StoreEvent(seq_base + i + 1, kind, payload, ts)
+                self._events.append(ev)
+                # 落盘成功后才更新索引（R6-03：索引不得先于磁盘）
+                if kind == "fill" and payload.get("fill_id") is not None:
+                    self._uniq_fill.add(payload["fill_id"])
+                elif kind == "order" and payload.get("order_id") is not None:
+                    self._uniq_order.add(payload["order_id"])
+                elif (kind == "bar_consumed"
+                        and payload.get("bar_key") is not None):
+                    self._uniq_bar.add(payload["bar_key"])
+                out.append(ev)
+            self._seq = seq_base + len(entries)
+            return out
+
+    def _fsync_write(self, blob: bytes) -> None:
+        with open(self.path, "ab") as f:
+            f.write(blob)
             f.flush()
             os.fsync(f.fileno())
 
     def _load(self, path: str) -> None:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
+        with open(path, "rb") as f:
+            for line in f.read().decode("utf-8").splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 ev = StoreEvent.from_json(line)
-                # A07：载入重建分域唯一索引（fill_id/order_id/bar_key）
                 if ev.kind == "fill":
                     fid = ev.payload.get("fill_id")
                     if fid is not None:
@@ -132,6 +171,10 @@ class EventStore:
                             raise EventConflictError(
                                 f"载入即冲突: order_id={oid}")
                         self._uniq_order.add(oid)
+                elif ev.kind == "bar_consumed":
+                    bk = ev.payload.get("bar_key")
+                    if bk is not None:
+                        self._uniq_bar.add(bk)
                 self._events.append(ev)
                 self._seq = max(self._seq, ev.seq)
 
@@ -199,7 +242,6 @@ def replay_events(events: Sequence[StoreEvent]) -> ReplayState:
                 st.positions[p["instrument_id"]] = (
                     st.positions.get(p["instrument_id"], 0)
                     + int(p["qty"]))
-                # A07：sellable 恢复（sellable_from 随 fill 事件持久化）
                 sf = p.get("sellable_from")
                 if sf:
                     iid = p["instrument_id"]
