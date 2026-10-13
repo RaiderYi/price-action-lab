@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from pal.context.regime import RegimeKind
 from pal.data.bars import Bar
+from pal.data.calendar import TradingCalendar
 from pal.domain.decision import DecisionSnapshot
 from pal.domain.models import DomainValidationError, SignalState
 from pal.execution.fill_models import match_stop_loss_long
@@ -48,6 +49,7 @@ class OrchestratorConfig:
     rules: MarketRuleSet = MAIN_BOARD
     trigger_expiry_bars: int = 8
     max_participation_pct: float = 0.10    # T03/F03：参与率
+    calendar: Optional[TradingCalendar] = None   # T06：正式路径必传
 
 
 @dataclass
@@ -264,7 +266,8 @@ class SessionOrchestrator:
         o.apply_fill(qty, fill.price, fill_id=f"fill_{setup.setup_id}",
                      event_at=bar.bar_end.isoformat())
         d = bar.bar_start.date()
-        nxt = d + timedelta(days=1)     # 由 TradingCalendar 提供更好（T06）
+        nxt = (self.cfg.calendar.next_trading_day(d)
+               if self.cfg.calendar is not None else d + timedelta(days=1))
         self.ledger.buy(iid, qty, fill.price, d, self.cfg.rules,
                         t1_next_trading_day=nxt)
         # T04/F01：原子绑定退出计划（不再依赖手工 bind）

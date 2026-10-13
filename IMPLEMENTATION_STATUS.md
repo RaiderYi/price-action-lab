@@ -6,7 +6,23 @@
 
 ## 批次记录
 
-### 第三轮复审修正批次（2026-10-13，审阅提交 feb3641 → 本轮）
+### 第三轮复审修正批次 B（2026-10-13，M2 门：完整组合内核）
+
+| 任务 | 对应复审发现 | 状态 | 变更文件 | 验收证据 |
+|---|---|---|---|---|
+| T06 行情/日历完整性 | F07+T06 | DONE | src/pal/data/bars.py、pipeline/orchestrator.py（calendar 字段） | tests/pal/test_round3_t06.py 8项：日历网格精确匹配（缺尾棒/非交易日/重复/错周期/缺下午槽→partial）；final 日线 available_at=15:00；周五买入→下周一可卖（非周六） |
+| T07 多票组合分配 | F09(T07) | DONE | src/pal/portfolio/allocator.py（新） | tests/pal/test_round3_t07.py 7项：3票争资固定分配且顺序无关；同分按ID字典序；同票净预算；批内行业25%上限；缺报价显式降级不崩溃；熔断只拦新仓；qty 受风险/现金/单票多重约束 |
+| T08 持久化与恢复 | F09(T08) | DONE | src/pal/pipeline/event_store.py（新） | tests/pal/test_round3_t08.py 8项：fill_id/order_id/bar_key 唯一约束；落盘重载一致；崩溃恢复重放=在线状态；重复成交回报重放不重复记账；每日对账 reconcile；write-ahead fsync |
+| T09 backtest=paper 同内核 | F09(T09) | DONE | src/pal/research/backtest_runner.py（新） | tests/pal/test_round3_t09.py 5项：runner 内部即 SessionOrchestrator（无独立交易路径）；同输入两次运行 NAV/事件/现金全等；整批重传零新事件零新 NAV；期末未平仓估值不虚构成交；nav_series 有写入且时间递增。红→绿：修复了二次 run 重复抄回历史 NAV 的真 bug |
+
+**本轮证据**：全套 **506 passed / 0 skipped**（批次 A 后 478 → +28）。
+T09 测试先红后绿（二次 run 重复 NAV），证明断言有效非恒真。
+
+**剩余**：批次 C（T10 真实数据接入=外部依赖 BLOCKED、T11 五模型桥接=外部依赖、
+T12 CLI scan/backtest/paper/report、T13 持续运行演练）；批次 D（T14 统计裁决、
+T15 券商适配=未授权、T16 状态门）。M2 门工程部分达成；M3/M4 待真实数据与 CLI。
+
+### 第三轮复审修正批次 A（2026-10-13，审阅提交 feb3641 → 本轮）
 
 依据：《price-action-lab_第三轮复审与完整交易系统交付清单.md》（T01–T16，M1–M5）。
 本轮范围 = 批次 A（T01–T05：单笔交易真正闭环）。

@@ -87,14 +87,25 @@ class BarSeries:
 
 
 def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
-                          expected_slots_per_day: int = 8) -> List[Bar]:
-    """30m → 日线（R03+F07 修正：证券过滤+完整性+槽位唯一）。
+                          expected_slots_per_day: int = 8,
+                          calendar: Optional["TradingCalendar"] = None,
+                          ) -> List[Bar]:
+    """30m → 日线（R03+F07+T06 修正：证券过滤+完整性+槽位唯一+日历强制）。
 
+    无日历时（legacy 近似）：
     - 只聚合 instrument_id 匹配的完成 bar；
-    - F07：同一槽位（bar_start）重复出现 → 该日不构成 final（去重后
-      槽位数 < 期望数且检测到重复输入）；
+    - F07：同一槽位（bar_start）重复出现 → 该日不构成 final；
     - 不足 expected_slots_per_day → is_final=False。
+
+    T06（传入 TradingCalendar 时，正式路径）：
+    - 混票/错周期 bar → 直接拒绝（DomainValidationError），不静默丢弃；
+    - 非交易日出现的 bar → 该日不构成 final；
+    - 槽位集合必须与日历网格（calendar.bars_for_day）精确相等——
+      缺槽（含缺尾棒）、多槽、跨午休错位一律 partial；
+    - final 日线的 available_at = 15:00 收盘（日历口径）。
     """
+    from pal.data.calendar import TradingCalendar  # 局部导入避免环
+
     by_day = {}
     dup_detected = set()
     seen_slots = set()
@@ -102,7 +113,10 @@ def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
         if not b.is_final:
             continue
         if b.instrument_id != instrument_id:
-            continue
+            continue        # 混票由调用方过滤；这里只处理本票
+        if b.timeframe != "30m":
+            raise DomainValidationError(
+                f"错周期输入: {b.timeframe}（期望 30m，T06 拒绝静默聚合）")
         d = b.bar_start.date()
         slot = (d, b.bar_start.time())
         if slot in seen_slots:
@@ -113,13 +127,25 @@ def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
     daily = []
     for d in sorted(by_day):
         chunk = sorted(by_day[d], key=lambda x: x.bar_start)
-        complete = (len(chunk) >= expected_slots_per_day
-                    and d not in dup_detected)   # F07
+        if calendar is not None:
+            # T06：日历网格精确匹配
+            if not calendar.is_trading_day(d):
+                complete = False
+            else:
+                expected = {s.time() for s, _ in calendar.bars_for_day(d)}
+                actual = {b.bar_start.time() for b in chunk}
+                complete = (actual == expected and d not in dup_detected)
+        else:
+            complete = (len(chunk) >= expected_slots_per_day
+                        and d not in dup_detected)
         day_end = chunk[-1].bar_end
+        avail = (calendar.daily_close_available_at(d)
+                 if (calendar is not None and calendar.is_trading_day(d))
+                 else max(x.available_at for x in chunk))
         daily.append(Bar(
             instrument_id=instrument_id, timeframe="1d",
             bar_start=chunk[0].bar_start, bar_end=day_end,
-            available_at=max(x.available_at for x in chunk),
+            available_at=avail,
             open=chunk[0].open, high=max(x.high for x in chunk),
             low=min(x.low for x in chunk), close=chunk[-1].close,
             volume=sum(x.volume for x in chunk),
