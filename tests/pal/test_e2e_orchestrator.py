@@ -61,23 +61,28 @@ def mk_cand(iid="SSE.600519", at=None):
 
 
 def make_h2_bars():
-    """两腿回调 H2 场景（同 B3 测试的 build_h2_scenario）。"""
+    """真实可判定的严格 H2 正例（第三轮复审 F06：旧夹具 events=[]）。
+
+    摆点序列（confirm=3）：H(11.2) → L1(9.0) → H1(13.2) → L2(10.2)，
+    H 递进 ✓ HL 链 ✓ 收盘站上 L2 ✓ → strict_h2_verdict=True。
+    """
+    def bar(i, h, l, c):
+        return bar30(i, o=(h + l) / 2, h=h, l=l, c=c)
+
+    def leg(start_i, n, h_from, l_from, h_to, l_to):
+        out = []
+        for k in range(n):
+            t = k / (n - 1)
+            h = h_from + (h_to - h_from) * t
+            l = l_from + (l_to - l_from) * t
+            out.append(bar(start_i + k, h + 0.15, l - 0.15, (h + l) / 2 + 0.05 * t))
+        return out
+
     bars = []
-    px = 10.0
-    for i in range(10):
-        px += 0.3
-        bars.append(bar30(i, o=px - 0.15, h=px + 0.1, l=px - 0.35, c=px))
-    for i in range(10, 14):
-        px -= 0.35
-        bars.append(bar30(i, o=px + 0.15, h=px + 0.3, l=px - 0.1, c=px))
-    for i in range(14, 17):
-        px += 0.25
-        bars.append(bar30(i, o=px - 0.1, h=px + 0.15, l=px - 0.3, c=px))
-    for i in range(17, 20):
-        px -= 0.13
-        bars.append(bar30(i, o=px + 0.1, h=px + 0.25, l=px - 0.05, c=px))
-    px += 0.4
-    bars.append(bar30(20, o=px - 0.2, h=px + 0.1, l=px - 0.3, c=px))
+    bars += leg(0, 6, 11.0, 10.5, 9.6, 9.2)     # 跌 → L1≈9.0
+    bars += leg(6, 6, 9.8, 9.3, 13.0, 12.5)     # 涨 → H1≈13.2
+    bars += leg(12, 6, 12.8, 12.3, 11.0, 10.4)  # 回调 → L2≈10.2
+    bars += leg(18, 4, 11.2, 10.6, 12.0, 11.5)  # 站上
     return bars
 
 

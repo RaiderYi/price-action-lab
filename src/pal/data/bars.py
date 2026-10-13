@@ -88,25 +88,33 @@ class BarSeries:
 
 def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
                           expected_slots_per_day: int = 8) -> List[Bar]:
-    """30m → 日线（R03 修正：完整性检查 + 证券过滤）。
+    """30m → 日线（R03+F07 修正：证券过滤+完整性+槽位唯一）。
 
     - 只聚合 instrument_id 匹配的完成 bar；
-    - 每交易日聚合后与 expected_slots_per_day 比对：不足 → 不产出
-      final 日线（输出 partial：is_final=False，或直接不产出当根为空时）；
-    - available_at = 参与bar 的最大 available_at（供应商延迟传播，R10）。
+    - F07：同一槽位（bar_start）重复出现 → 该日不构成 final（去重后
+      槽位数 < 期望数且检测到重复输入）；
+    - 不足 expected_slots_per_day → is_final=False。
     """
     by_day = {}
+    dup_detected = set()
+    seen_slots = set()
     for b in bars_30m:
         if not b.is_final:
             continue
-        if b.instrument_id != instrument_id:      # R03：证券过滤
+        if b.instrument_id != instrument_id:
             continue
         d = b.bar_start.date()
+        slot = (d, b.bar_start.time())
+        if slot in seen_slots:
+            dup_detected.add(d)          # F07：重复数据
+            continue
+        seen_slots.add(slot)
         by_day.setdefault(d, []).append(b)
     daily = []
     for d in sorted(by_day):
         chunk = sorted(by_day[d], key=lambda x: x.bar_start)
-        complete = len(chunk) >= expected_slots_per_day    # R03：完整性
+        complete = (len(chunk) >= expected_slots_per_day
+                    and d not in dup_detected)   # F07
         day_end = chunk[-1].bar_end
         daily.append(Bar(
             instrument_id=instrument_id, timeframe="1d",
@@ -116,8 +124,6 @@ def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
             low=min(x.low for x in chunk), close=chunk[-1].close,
             volume=sum(x.volume for x in chunk),
             amount=sum(x.amount for x in chunk),
-            is_final=complete,        # R03：不足8根 → 非 final
+            is_final=complete,
         ))
-    # 只保留 final 日线为常规输出语义？不——partial 显式保留但标记，
-    # 调用方 as-of 视图天然排除（BarSeries.asof 过滤 is_final）。
     return daily

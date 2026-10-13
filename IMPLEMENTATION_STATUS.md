@@ -6,6 +6,29 @@
 
 ## 批次记录
 
+### 第三轮复审修正批次（2026-10-13，审阅提交 feb3641 → 本轮）
+
+依据：《price-action-lab_第三轮复审与完整交易系统交付清单.md》（T01–T16，M1–M5）。
+本轮范围 = 批次 A（T01–T05：单笔交易真正闭环）。
+
+| 任务 | 对应复审发现 | 状态 | 变更文件 | 验收证据 |
+|---|---|---|---|---|
+| T01 验收夹具不空跑 | F06 | DONE | tests/pal/test_round3_t01.py（新）、test_e2e_orchestrator.py、test_engine_patterns.py | §7 复审反例全部固化：F01–F08 共 16 项断言，修复前红→修复后绿；有效 H2 正例不再 skip（478 passed / 0 skipped） |
+| T02 事件幂等与时序 | F04 | DONE | src/pal/pipeline/orchestrator.py | 同棒重复投递状态不变（含 NAV 不重复记录）；armed_at==bar 可用时刻同棒不得自我触发；真实引擎重复投递不重复买入 |
+| T03 订单撮合语义 | F02/F03 | DONE | orchestrator.py（_try_fill 接 fill_models） | bar 内触发按触发价成交（非开盘价）；跳空高于触发价按开盘成交（buy-stop 语义）；零量不成交；成交量参与率上限 qty≤cap |
+| T04 退出自动绑定 | F01 | DONE | orchestrator.py（_try_fill 原子绑定退出） | 成交后次交易日跌破止损自动退出（无需手工 bind）；跳空按开盘价退出 |
+| T05 资格链收拢 | F05 | DONE | signals/engine.py、orchestrator.py | weak 突破拒绝（不再 ARMED）；family 从源传播不再硬编码 H2；空日线不构成 regime 放行 |
+| 数据完整性补漏 | F07/F08 | DONE | data/bars.py、research/framework.py | 重复棒不伪造 final 日线（8 根重复→partial）；release_gate 回撤必查——独立参数与 metrics 都缺失→INCONCLUSIVE，90% 回撤→FAIL |
+
+**本轮证据**：全套 **478 passed / 0 skipped**（此前 462 passed + 1 skip + 53 集成排除）。
+复审 §1 的六项"最关键实际结果"全部有对应红→绿测试。
+未入库：第三轮复审清单 md（工作文档）；T06–T16 待后续批次。
+
+**下一步（T06+，批次 B）**：多票统一组合分配（T07 PortfolioAllocator）、
+订单/成交/账本持久化与恢复（T08）、backtest=paper 同内核（T09）、
+交易日历完整性强制（T06）。真实数据接入（T10）仍是外部依赖，
+登记于 docs/audit/data-capability-matrix.md。
+
 ### 第二轮复审修正批次（2026-10-12，审阅提交 b412e1a → 本轮）
 
 | 批次 | R 编号 | 状态 | 验收证据 |

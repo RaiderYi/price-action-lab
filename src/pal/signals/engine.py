@@ -134,7 +134,7 @@ class DecisionEngine:
                         "target": plan.target},
                 config_version=self.config.config_version))
 
-    # ── breakout（统一强度服务 + 结构定价）──
+    # ── breakout（统一强度服务 + 结构定价，T05/F05：强度门槛生效）──
     def _eval_breakout(self, asof, bars, swings, res, candidate) -> None:
         if len(bars) < 22:
             return
@@ -145,6 +145,19 @@ class DecisionEngine:
         strength = assess_breakout_strength(bars, breakout_level=prior_high)
         if not strength.crossed_level:
             return
+        # T05/F05：weak 突破不得 ARMED（复审复现：strength=weak 仍武装）
+        if strength.level == "weak":
+            res.decisions.append(DecisionSnapshot(
+                outcome="reject", rule_id="engine.breakout.v1",
+                reason_code="REJ_RR_BELOW_MIN",
+                evidence_ids=(), decided_at=asof.isoformat(),
+                detail={"msg": f"weak breakout rejected (strength={strength.level})"},
+                config_version=self.config.config_version))
+            return
+        # T05：follow 评估进入主链（跟随需后续棒；本棒只记录待确认）
+        # 引擎在后续 bar 重新评估时，突破棒已成历史 → follow 可判定。
+        # 当前棒：仅当强度足够（strong/moderate）时武装，follow 留给
+        # 触发阶段由 orchestrator 的 armed→trigger 检查承担。
         ev = {"breakout_level": prior_high,
               "signal_bar_low": bars[-1].low,
               "measured_target": prior_high + (prior_high - min(b.low for b in prior))}

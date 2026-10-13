@@ -133,27 +133,29 @@ class TestRangeFade:
 
 
 def build_h2_scenario(valid=True):
-    """构造两腿回调序列（0-9 上升→10-13 回调一腿→14-16 反弹→17-19 回调二腿→20 站上）。"""
+    """第三轮复审 T01：真实可判定的严格 H2 正例（修复恒 skip）。
+
+    腿式构造（confirm=2/3 均通过）：
+    H0(11.15) → L1(9.05) → H1(13.15) → L2(10.25) → 收盘站上 L2。
+    H 递进 ✓ HL 链 ✓ 尾部为 L 后站上 ✓ → strict_h2_verdict=True。
+    旧逐 0.3 累进夹具摆点尾部为 H 且 H 递降，永远构不成 H2（复审 F06）。
+    """
+    def leg(start_i, n, h_from, l_from, h_to, l_to):
+        out = []
+        for k in range(n):
+            t = k / (n - 1)
+            h = h_from + (h_to - h_from) * t
+            l = l_from + (l_to - l_from) * t
+            c = (h + l) / 2
+            out.append(bar30(start_i + k, o=c, h=h + 0.15, l=l - 0.15,
+                             c=c + 0.05 * t))
+        return out
+
     bars = []
-    px = 10.0
-    for i in range(10):
-        px += 0.3
-        bars.append(bar30(i, o=px - 0.15, h=px + 0.1, l=px - 0.35, c=px))
-    # 回调一腿：跌到 11.6
-    for i in range(10, 14):
-        px -= 0.35
-        bars.append(bar30(i, o=px + 0.15, h=px + 0.3, l=px - 0.1, c=px))
-    # 反弹到 12.3（H）
-    for i in range(14, 17):
-        px += 0.25
-        bars.append(bar30(i, o=px - 0.1, h=px + 0.15, l=px - 0.3, c=px))
-    # 回调二腿：跌到 11.9（HL2 > HL1=11.6 → 但要两腿都高于前低）
-    for i in range(17, 20):
-        px -= 0.13
-        bars.append(bar30(i, o=px + 0.1, h=px + 0.25, l=px - 0.05, c=px))
-    # 站上
-    px += 0.4
-    bars.append(bar30(20, o=px - 0.2, h=px + 0.1, l=px - 0.3, c=px))
+    bars += leg(0, 6, 11.0, 10.5, 9.6, 9.2)     # 跌 → L1≈9.05
+    bars += leg(6, 6, 9.8, 9.3, 13.0, 12.5)     # 涨 → H1≈13.15
+    bars += leg(12, 6, 12.8, 12.3, 11.0, 10.4)  # 回调 → L2≈10.25
+    bars += leg(18, 4, 11.2, 10.6, 12.0, 11.5)  # 站上
     return bars
 
 

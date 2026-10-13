@@ -234,13 +234,16 @@ def release_gate(plan: PreregisteredPlan, result_metrics: Dict[str, float],
         return Verdict.INCONCLUSIVE       # 缺置信区间不得 PASS
     if pm < (plan.min_economic_threshold or 0.0):
         return Verdict.FAIL
-    # R08：回撤容忍参与判定
-    if realized_max_drawdown is not None:
-        if not math.isfinite(realized_max_drawdown):
-            return Verdict.INCONCLUSIVE
-        if (plan.max_drawdown_tolerance is not None
-                and realized_max_drawdown > plan.max_drawdown_tolerance):
-            return Verdict.FAIL
+    # R08+F08：回撤必查——独立参数优先，其次 metrics 内 max_drawdown；
+    # 两处都没有 → INCONCLUSIVE（缺关键证据不得 PASS）
+    dd = realized_max_drawdown
+    if dd is None:
+        dd = result_metrics.get("max_drawdown")
+    if dd is None or not math.isfinite(dd):
+        return Verdict.INCONCLUSIVE
+    if (plan.max_drawdown_tolerance is not None
+            and dd > plan.max_drawdown_tolerance):
+        return Verdict.FAIL
     if ci_lower <= 0:
         return Verdict.INCONCLUSIVE
     return Verdict.PASS
