@@ -6,6 +6,17 @@
 
 ## 批次记录
 
+### 第三轮复审修正批次 C-1（2026-10-13，T12 CLI + BLOCKED 登记）
+
+| 任务 | 状态 | 变更文件 | 验收证据 |
+|---|---|---|---|
+| T12 统一 CLI | DONE | src/pal_cli.py（重写：doctor/scan/backtest/paper/report/reconcile/version） | tests/pal/test_round3_t12.py 13项：scan 产 run_manifest（run_id+commit+kernel）+daily_plan JSON+MD；无 manifest→exit 2；无 bars→exit 3（BLOCKED 非失败）；backtest 同内核含版本与 NAV 序列、任意目录可跑；paper 无实时源→exit 3；report/reconcile 缺产物各分状态退出码；未知命令 exit 1。退出码语义：0=OK/1=用法/2=INVALID/3=BLOCKED |
+| T10 真实数据 | BLOCKED | pal_cli.DATA_PROVIDER_STATUS | 外部依赖：行情来源/权限/费用未定（docs/audit/data-capability-matrix.md）；scan/backtest 以 --snapshot 冻结快照运行，不用伪数据 |
+| T11 五模型桥接 | BLOCKED | 现有 selection/providers STRUCTURED_V1 | 外部依赖：真实私有样例；公开基线 provider 已就绪可插拔 |
+
+**本轮证据**：全套 **519 passed / 0 skipped**（批次 B 后 506 → +13）。
+smoke：快照→scan→backtest→report 全链路 exit 0，产物含版本指纹。
+
 ### 第三轮复审修正批次 B（2026-10-13，M2 门：完整组合内核）
 
 | 任务 | 对应复审发现 | 状态 | 变更文件 | 验收证据 |
