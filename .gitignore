@@ -25,3 +25,4 @@ logs/
 # Python packaging artifacts
 *.egg-info/
 runs/
+build/
