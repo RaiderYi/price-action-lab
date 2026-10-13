@@ -139,9 +139,13 @@ def resample_30m_to_daily(bars_30m: Sequence[Bar], instrument_id: str,
             complete = (len(chunk) >= expected_slots_per_day
                         and d not in dup_detected)
         day_end = chunk[-1].bar_end
-        avail = (calendar.daily_close_available_at(d)
-                 if (calendar is not None and calendar.is_trading_day(d))
-                 else max(x.available_at for x in chunk))
+        # A09：最终可知时间 ≥ max(正式收盘可用时刻, 所有输入 available_at)
+        # ——供应商延迟必须传播，不得提前暴露收盘数据
+        if calendar is not None and calendar.is_trading_day(d):
+            avail = max(calendar.daily_close_available_at(d),
+                        max(x.available_at for x in chunk))
+        else:
+            avail = max(x.available_at for x in chunk)
         daily.append(Bar(
             instrument_id=instrument_id, timeframe="1d",
             bar_start=chunk[0].bar_start, bar_end=day_end,

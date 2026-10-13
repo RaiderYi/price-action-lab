@@ -149,13 +149,17 @@ class TestF01AutoExitBinding:
         assert q.ledger.positions.total_qty(IID) == 0, "退出后持仓应清零"
 
     def test_exit_at_open_on_gap(self):
-        """跳空低于止损按开盘价退出（不按更优止损价）。"""
+        """跳空低于止损按开盘价退出（不按更优止损价）。
+
+        A05 修复后：跳空买入按保守价定仓（2400→2200 股，风险预算内），
+        退出仍按开盘 8.5。
+        """
         q = orch(); arm(q)
         q.on_bar(IID, bar(), [], [], None)
         ev = q.on_bar(IID, bar(t=T + timedelta(days=1), o=8.5, h=8.6,
                                l=8.0, c=8.2), [], [], None)
-        assert any("EXIT_STOP:2400@8.5" in e for e in ev), (
-            f"跳空应按开盘8.5成交退出，实得 {ev}")
+        assert any("EXIT_STOP:2200@8.5" in e for e in ev), (
+            f"跳空应按开盘8.5成交退出（A05定仓后2200股），实得 {ev}")
 
 
 # ═══════════════════════════════════════════════════════

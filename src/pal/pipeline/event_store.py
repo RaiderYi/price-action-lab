@@ -61,6 +61,10 @@ class EventStore:
         self._seq = 0
         self._uniq: Dict[str, str] = {}     # f"{kind}|{key}" -> seq
         self._unique_fields = tuple(unique_keys)
+        # A07：fill 事件按 fill_id 唯一；order_id 是可重复关联键，
+        # 只有 order 事件本身按 order_id 唯一（一单多笔成交合法）
+        self._uniq_fill = set()
+        self._uniq_order = set()
         self._lock = threading.Lock()
         if path and os.path.exists(path):
             self._load(path)
@@ -69,20 +73,31 @@ class EventStore:
     def append(self, kind: str, payload: Dict[str, Any],
                ts: str = "") -> StoreEvent:
         with self._lock:
-            for f in self._unique_fields:
-                v = payload.get(f)
-                if v is None:
-                    continue
-                k = f"{kind}|{v}"
-                if k in self._uniq:
+            # A07：fill 用 fill_id 去重；order 用 order_id；
+            # bar_consumed 用 bar_key（各自分域，一单多 fill 合法）
+            if kind == "fill":
+                fid = payload.get("fill_id")
+                if fid is not None and fid in self._uniq_fill:
                     raise EventConflictError(
-                        f"重复事件: {k}（seq {self._uniq[k]} 已存在）")
+                        f"重复成交回报: fill_id={fid}")
+                if fid is not None:
+                    self._uniq_fill.add(fid)
+            elif kind == "order":
+                oid = payload.get("order_id")
+                if oid is not None and oid in self._uniq_order:
+                    raise EventConflictError(
+                        f"重复订单事件: order_id={oid}")
+                if oid is not None:
+                    self._uniq_order.add(oid)
+            elif kind == "bar_consumed":
+                bk = payload.get("bar_key")
+                if bk is not None and any(
+                        e.kind == "bar_consumed"
+                        and e.payload.get("bar_key") == bk
+                        for e in self._events):
+                    raise EventConflictError(f"重复bar事件: {bk}")
             self._seq += 1
             ev = StoreEvent(self._seq, kind, payload, ts)
-            for f in self._unique_fields:
-                v = payload.get(f)
-                if v is not None:
-                    self._uniq[f"{kind}|{v}"] = str(self._seq)
             if self.path:
                 self._fsync_append(ev)
             self._events.append(ev)
@@ -102,16 +117,23 @@ class EventStore:
                 if not line:
                     continue
                 ev = StoreEvent.from_json(line)
+                # A07：载入重建分域唯一索引（fill_id/order_id/bar_key）
+                if ev.kind == "fill":
+                    fid = ev.payload.get("fill_id")
+                    if fid is not None:
+                        if fid in self._uniq_fill:
+                            raise EventConflictError(
+                                f"载入即冲突: fill_id={fid}")
+                        self._uniq_fill.add(fid)
+                elif ev.kind == "order":
+                    oid = ev.payload.get("order_id")
+                    if oid is not None:
+                        if oid in self._uniq_order:
+                            raise EventConflictError(
+                                f"载入即冲突: order_id={oid}")
+                        self._uniq_order.add(oid)
                 self._events.append(ev)
                 self._seq = max(self._seq, ev.seq)
-                for fld in self._unique_fields:
-                    v = ev.payload.get(fld)
-                    if v is not None:
-                        k = f"{ev.kind}|{v}"
-                        if k in self._uniq:
-                            raise EventConflictError(
-                                f"载入即冲突: {k}（文件损坏/重复事件）")
-                        self._uniq[k] = str(ev.seq)
 
     # ── 查询 ──
     def events(self) -> List[StoreEvent]:
@@ -177,6 +199,13 @@ def replay_events(events: Sequence[StoreEvent]) -> ReplayState:
                 st.positions[p["instrument_id"]] = (
                     st.positions.get(p["instrument_id"], 0)
                     + int(p["qty"]))
+                # A07：sellable 恢复（sellable_from 随 fill 事件持久化）
+                sf = p.get("sellable_from")
+                if sf:
+                    iid = p["instrument_id"]
+                    st.sellable.setdefault(iid, {})[sf] = (
+                        st.sellable.get(iid, {}).get(sf, 0)
+                        + int(p["qty"]))
             else:
                 st.cash += (gross - commission - tax)
                 st.positions[p["instrument_id"]] = (

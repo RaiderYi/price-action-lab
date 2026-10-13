@@ -51,7 +51,9 @@ def _make_snapshot(td: str, days=(date(2026, 10, 12),)):
     with open(os.path.join(snap, "manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump({"asof_date": days[-1].isoformat(),
-                   "snapshot_id": "t12"}, f, ensure_ascii=False)
+                   "snapshot_id": "t12",
+                   "instruments": {"SSE.600519": {"industry": "test"}},
+                   "file_sha256": {}}, f, ensure_ascii=False)
     return snap
 
 
@@ -119,7 +121,8 @@ class TestBacktest:
             assert r.returncode == 0, r.stdout + r.stderr
             doc = json.load(open(os.path.join(out, "backtest.json"),
                                  encoding="utf-8"))
-            assert doc["schema"] == "backtest/v1"
+            assert doc["schema"] == "backtest/v2"
+            assert doc["status"] in ("OK", "NO_TRADES", "NO_SIGNAL")
             assert doc["n_days"] == 2
             assert len(doc["nav_series"]) == 16
             assert "不构成收益证据" in doc["caveat"]
@@ -136,10 +139,10 @@ class TestBacktest:
 
 
 class TestPaperAndReconcile:
-    def test_paper_blocked_external_dependency(self):
+    def test_paper_requires_events_file(self):
+        """无 --events 用法错误；离线 paper 已可用（N03 新契约）。"""
         r = _run_cli("paper")
-        assert r.returncode == 3
-        assert "BLOCKED" in r.stdout
+        assert r.returncode == 1      # 用法错误（不再是恒 BLOCKED）
 
     def test_reconcile_without_events_blocked(self):
         with tempfile.TemporaryDirectory() as td:

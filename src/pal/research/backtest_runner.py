@@ -68,27 +68,39 @@ class BacktestRunner:
             return res
         # 只收集本次新增（多次 run 累积在 orchestrator 里，不重复抄回）
         nav_offset = len(self.orch.nav_series)
-        # 预排序：bar 按 available_at（时间正确性由内核幂等+单调钟保证）
-        for day in sorted(days, key=lambda d: d.trade_date):
-            for bar in sorted(day.bars_30m, key=lambda b: b.bar_start):
-                cand = next(
-                    (c for c in day.candidates
-                     if c.instrument_id == bar.instrument_id
-                     and c.eligible_from <= bar.available_at),
-                    None)
-                ev = self.orch.on_bar(
-                    bar.instrument_id, bar,
-                    bars_30m=[b for b in day.bars_30m
-                              if b.bar_start < bar.bar_start],
-                    daily_bars=list(day.daily_bars),
-                    candidate=cand)
-                res.events.extend(ev)
+        # N04/A03：每票维护跨日历史窗口（突破需要 ≥22 根，单日 8 根不够）
+        history: Dict[str, List[Bar]] = {}
+        # N04：按 available_at 投递（因果时钟，非 bar_start）
+        all_bars = [b for day in days for b in day.bars_30m]
+        all_bars.sort(key=lambda b: (b.available_at, b.bar_start))
+        day_by_date = {day.trade_date: day for day in days}
+        for bar in all_bars:
+            day = day_by_date.get(bar.bar_start.date())
+            if day is None:
+                continue
+            cand = next(
+                (c for c in day.candidates
+                 if c.instrument_id == bar.instrument_id
+                 and c.eligible_from <= bar.available_at),
+                None)
+            hist = history.get(bar.instrument_id, [])
+            # 每票各自日线背景（多票日不过滤也安全：orchestrator
+            # 只用 daily 的 regime，且 A04 异票防护已就位）
+            day_daily = [b for b in day.daily_bars
+                         if b.instrument_id == bar.instrument_id]
+            ev = self.orch.on_bar(
+                bar.instrument_id, bar,
+                bars_30m=hist,
+                daily_bars=day_daily,
+                candidate=cand)
+            # 只在成功处理后积累历史（on_bar 异常时不污染）
+            history.setdefault(bar.instrument_id, []).append(bar)
+            res.events.extend(ev)
         res.nav_series = list(self.orch.nav_series[nav_offset:])
-        # 期末估值：未平仓按各票最后收盘（不虚构成交）
+        # 期末估值：各票取 available_at 最大的 bar 收盘（最后有效报价）
         marks: Dict[str, float] = {}
-        for day in days:
-            for b in day.bars_30m:
-                marks[b.instrument_id] = b.close
+        for bar in all_bars:
+            marks[bar.instrument_id] = bar.close
         held = {iid: q for iid, q in (
             (iid, self.ledger.positions.total_qty(iid))
             for iid in {b.instrument_id for d in days for b in d.bars_30m})

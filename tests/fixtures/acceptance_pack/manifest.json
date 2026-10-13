@@ -1,0 +1,50 @@
+{
+ "schema": "acceptance_pack/v1",
+ "snapshot_id": "acceptance-frozen-v1",
+ "asof_date": "2026-10-14",
+ "calendar_version": "acceptance-v1",
+ "trading_days": [
+  "2026-10-09",
+  "2026-10-12",
+  "2026-10-13",
+  "2026-10-14",
+  "2026-10-15"
+ ],
+ "instruments": {
+  "SSE.600519": {
+   "industry": "consumer",
+   "display": "600519"
+  },
+  "SZSE.000001": {
+   "industry": "bank",
+   "display": "000001"
+  },
+  "SZSE.300750": {
+   "industry": "battery",
+   "display": "300750"
+  }
+ },
+ "file_sha256": {
+  "bars_SSE_600519.jsonl": "bdbb83b190eee67c76baa64e0ba34bf940569d3238456ae4f976aa9bdd19425f",
+  "daily_SSE_600519.jsonl": "e8b2825ba6d7072c77fc48968f6703501319933a8f8dbd1ac5647c38988645d6",
+  "bars_SZSE_000001.jsonl": "4ea4cbc9caa4a53e35c4aa6a8a190bd8a6aefbeaf75ba4857ecb9fb647680bdc",
+  "daily_SZSE_000001.jsonl": "a123d7aaf630a05465d1a63158bd2e04b6680c1504092152e1735a6013f6f6ed",
+  "bars_SZSE_300750.jsonl": "0b1b893bf64061871cf72f93115fd852ac6e4b8ba57d8ec58dc92575bd8c91b2",
+  "daily_SZSE_300750.jsonl": "779c56d894d34f4fa8a91ed1e61002a2650db74130a7e500882bb3926afcc9a4"
+ },
+ "expected": {
+  "SSE.600519": {
+   "signal": "ARMED",
+   "note": "强突破+RANGE日线 → 自动环境 ARMED（非显式传入）"
+  },
+  "SZSE.000001": {
+   "signal": "NO_SIGNAL"
+  },
+  "SZSE.300750": {
+   "signal": "REGIME_BLOCK"
+  },
+  "cross_day_history": "引擎窗口 ≥22 根跨 3 个交易日（A03 修复后）",
+  "multi_instrument": "异票行情互不干扰、无错票成交（A04）"
+ },
+ "disclaimer": "合成数据仅用于工程验收，不构成收益证据（N01 契约）"
+}

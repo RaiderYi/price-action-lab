@@ -75,11 +75,15 @@ class PortfolioAllocator:
 
     def allocate(self, requests: Sequence[AllocationRequest],
                  ledger: AccountLedger,
-                 marks: Dict[str, float]) -> List[AllocationResult]:
+                 marks: Dict[str, float],
+                 industry_of: Optional[Dict[str, str]] = None
+                 ) -> List[AllocationResult]:
         """确定性分配一批开仓请求。
 
         marks：全持仓市价（缺某持仓报价 → 该票先显式降级跳过，
         不在部分写账后崩溃——本方法不写账，只产出意图）。
+        industry_of（A10）：已有持仓 → 行业映射。缺省用请求中的
+        industry 字段（对不上已有持仓时按请求行业近似）。
         """
         if not requests:
             return []
@@ -102,8 +106,32 @@ class PortfolioAllocator:
                          key=lambda r: (-r.score, r.setup_id))
 
         positions_value = ledger.positions.mark_value(marks)
-        # 行业视图：调用方通过 marks 覆盖的持仓 + 本批已批准在途
+        # A10：已有持仓的完整行业暴露。
+        # fail-closed：有持仓但缺 industry_of 映射 → 无法验证行业闸，
+        # 整批显式拒绝（不静默放行；A10 复现：33.9% > 25% 上限被批准）
+        held_iids = [iid for iid, lots in ledger.positions._lots.items()
+                     if lots and ledger.positions.total_qty(iid) > 0]
+        if held_iids and not industry_of:
+            return [AllocationResult(r.instrument_id, r.setup_id, False, 0,
+                                     ("REJ_INDUSTRY_MAPPING_REQUIRED",))
+                    for r in ordered]
+        unmapped = [iid for iid in held_iids if iid not in (industry_of or {})]
+        if unmapped:
+            return [AllocationResult(r.instrument_id, r.setup_id, False, 0,
+                                     ("REJ_INDUSTRY_MAPPING_REQUIRED",))
+                    for r in ordered]
         industry_exposure: Dict[str, float] = {}
+        for iid in marks:
+            q = ledger.positions.total_qty(iid)
+            if q > 0:
+                ind = (industry_of or {}).get(iid, "unknown")
+                industry_exposure[ind] = (industry_exposure.get(ind, 0.0)
+                                          + q * marks[iid])
+        # A10：持仓数上限（已有 + 本批新增）
+        held_count = sum(
+            1 for iid in {i for i, ls in ledger.positions._lots.items()
+                          if ls} if ledger.positions.total_qty(iid) > 0)
+        slots_left = self.p.max_positions - held_count
         # 同票合并：同 instrument 多请求共享一份净预算（S6-05/T07）
         seen_instruments: set = set()
 
@@ -116,6 +144,12 @@ class PortfolioAllocator:
                     ("REJ_DUPLICATE_INSTRUMENT",)))
                 continue
             seen_instruments.add(r.instrument_id)
+            # A10：max_positions（已有持仓数 + 本批已批准）
+            if slots_left <= 0:
+                results.append(AllocationResult(
+                    r.instrument_id, r.setup_id, False, 0,
+                    ("REJ_MAX_POSITIONS",)))
+                continue
             if r.stop >= r.entry or r.entry <= 0 or r.stop <= 0:
                 results.append(AllocationResult(
                     r.instrument_id, r.setup_id, False, 0,
@@ -124,6 +158,7 @@ class PortfolioAllocator:
             mark = marks.get(r.instrument_id)
             inst_value = (ledger.positions.total_qty(r.instrument_id)
                           * mark) if mark is not None else 0.0
+            # A10：已有同行业持仓计入行业闸
             ind_val = (industry_exposure.get(r.industry, 0.0)
                        + inst_value)
             rd = self.constraints.size_position(
@@ -147,6 +182,7 @@ class PortfolioAllocator:
             positions_value += value
             industry_exposure[r.industry] = (
                 industry_exposure.get(r.industry, 0.0) + value)
+            slots_left -= 1
             results.append(AllocationResult(
                 r.instrument_id, r.setup_id, True, rd.max_qty,
                 rd.reason_codes))

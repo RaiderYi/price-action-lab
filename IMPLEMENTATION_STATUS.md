@@ -6,6 +6,43 @@
 
 ## 批次记录
 
+### 第四轮审查修正批次（2026-10-13，审查基线 fb5dbee，N01–N11 部分）
+
+依据：《price-action-lab_第四轮审查与交易系统分析报告_20261013.md》（A01–A12，N01–N14）。
+先全量复现附录A脚本（输出与附录B逐项一致确认），再修复。
+
+| 编号 | 状态 | 修复内容 | 证据 |
+|---|---|---|---|
+| A01/N02 | DONE | regime 改用无副作用 assess_trend_regime，消除 double evaluate | 复现脚本：自动 `[]` → `ARMED:setup_e2160d118331`（=显式） |
+| A03/N04 | DONE | BacktestRunner 每票跨日历史+available_at 时钟+期末 marks 修正 | 引擎窗口 8→22 根，跨日 ARMED 出现 |
+| A04 | DONE | 异票防护（声明vs本体校验+触发循环过滤）+marks 缓存+NAV 缺价降级 | 错票买入 2400→0；崩溃→NAV_DEGRADED 事件 |
+| A05 | DONE | 保守价上界定仓（max(open,entry)）+实际成交价复核+超限缩量 | 跳空 10000@11（风险4.4×）→2200@11（2420≤2500） |
+| A06 | DONE | lot 取整、零量卖出拦截（EXIT_BLOCKED_NO_LIQUIDITY）、止盈建卖出Order、多批计划不覆盖 | 250→200股；假退出→拦截事件 |
+| A07/N09 | DONE | EventStore 分域唯一（fill按fill_id/order按order_id）；sellable 恢复；orchestrator 接 store（bar/order/fill 落盘） | 同单第二笔 fill 不再冲突；replay sellable 恢复 |
+| A08 | DONE | 消费标记后置——校验失败零副作用可重试 | 日历 KeyError 后修复重投成功买入 |
+| A09 | DONE | 聚合 available_at=max(收盘时刻, 输入最大延迟) | 15:00 提前可见→15:07 正确 |
+| A10 | DONE(组件) | allocator：industry_of 映射（fail-closed）+max_positions 闸+批内递减 | 33.9%>25% 被批准→拒绝；超持仓数→REJ_MAX_POSITIONS |
+| A02/N03 | DONE | CLI 重写：候选按日从 manifest 注入、daily 接入、run_status.json 分立 NO_CANDIDATES/NO_SIGNAL/NO_TRADES/OK、输入 hash 校验 | 验收包 scan 三态并存；backtest 全链 |
+| N01 | DONE | 冻结验收包（3票×4日+触发/退出棒+SHA256 manifest+精确期望） | tests/fixtures/acceptance_pack |
+| N10 | DONE(核心) | 自产 events.jsonl+ledger_snapshot.json；reconcile 直接运行；重启恢复=连续基准 | 矩阵13/11 测试 |
+| A12/N11 | DONE | 验收矩阵测试 test_round4_matrix.py（全链精确断言+篡改拒绝+重启一致） | 10/10 |
+
+**全链里程碑（首次）**：`pal backtest --snapshot acceptance_pack` →
+`ARMED:setup_944961b4597e → FILL:8300@10.0 → EXIT_STOP:8300@8.5`，
+NAV 987,476.34（现金=NAV 清仓一致），`reconcile OK`。
+零 ArmedSetup 注入，全部来自公开 CLI 入口+真实引擎默认 regime 路径。
+
+**本轮证据**：全套 **529 passed / 0 failed / 0 skipped**。
+（第三轮 4 处 T12 断言随 N03 契约升级：paper 离线化、schema v2、
+ 夹具补 instruments——均为审查要求的正确语义，非放松。）
+
+**未完成（如实登记）**：
+- A11 跟随确认入主链/成交前 regime 重查——armed 触发先于候选分支，
+  DOWNTREND 时仍可能成交（P1，批次内待修）
+- N05/N06 allocator 未接入 orchestrator 主链（组件级验证）
+- N12/N13/N14 真实数据/超额研究/券商——外部依赖不变
+- M1 按第四轮口径仍为"部分通过"（默认路径正例已通，A11 未清）
+
 ### 第三轮复审修正批次 C-1（2026-10-13，T12 CLI + BLOCKED 登记）
 
 | 任务 | 状态 | 变更文件 | 验收证据 |
