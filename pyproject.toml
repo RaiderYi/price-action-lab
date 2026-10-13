@@ -37,7 +37,7 @@ py-modules = [
     "pal_cli",
     "pal_capabilities",
 ]
-packages = ["pal", "pal.domain", "pal.signals", "pal.signals.legacy", "pal.config", "pal.data", "pal.selection", "pal.pricing", "pal.context", "pal.execution", "pal.ledger", "pal.research", "pal.portfolio", "pal.reporting", "pal.pipeline"]
+packages = ["pal", "pal.domain", "pal.signals", "pal.signals.legacy", "pal.config", "pal.data", "pal.selection", "pal.pricing", "pal.context", "pal.execution", "pal.ledger", "pal.research", "pal.portfolio", "pal.reporting", "pal.pipeline", "pal.runtime", "pal.oms"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

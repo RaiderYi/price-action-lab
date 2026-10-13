@@ -36,7 +36,9 @@ def file_sha256(path: str) -> str:
 
 
 def write_bar_jsonl(path: str, bars: Sequence[Bar]) -> str:
-    with open(path, "w", encoding="utf-8") as f:
+    # R6-01：固定 LF 字节 + UTF-8 + sort_keys——生成器跨环境（Windows/
+    # Linux/macOS）产出逐字节相同的文件，hash 才具备跨环境可复现性。
+    with open(path, "wb") as f:
         for b in bars:
             f.write(json.dumps({
                 "instrument_id": b.instrument_id, "timeframe": b.timeframe,
@@ -46,7 +48,7 @@ def write_bar_jsonl(path: str, bars: Sequence[Bar]) -> str:
                 "open": b.open, "high": b.high, "low": b.low,
                 "close": b.close, "volume": b.volume,
                 "amount": b.amount, "is_final": b.is_final,
-            }, ensure_ascii=False) + "\n")
+            }, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n")
     return file_sha256(path)
 
 

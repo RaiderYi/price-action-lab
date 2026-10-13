@@ -1,0 +1,13 @@
+# R6-01：冻结样本 = 逐字节制品，不做任何平台换行转换。
+# text=auto 的默认安全行为是"入库规范化为 LF"——干净 checkout 在
+# autocrlf=true 的工作区会被展开成 CRLF，导致 hash 校验失败。
+# 这里强制 checkout 也保持 LF 原始字节。
+*.jsonl binary
+
+# Python/文档按惯例 LF。
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
