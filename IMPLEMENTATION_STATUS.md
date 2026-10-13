@@ -323,3 +323,26 @@ S4-08 engine.evaluate 统一入口。全套测试 **327 passed / 0 failed**。
 2. knowledge/ 1029 篇文档许可未声明（S1-05 处理）
 3. 行情 CSV 不在仓库，legacy 复跑需用户提供 D30 数据（任务书 §10 已登记）
 4. tests/integration 53 个文件在私有模块恢复前无法运行（预期行为）
+
+## 第六轮整改（R6-01~R6-10，2026-10-13）
+
+整改基线：第六轮复审清单（price-action-lab_第六轮复审与整改验收清单_20261013.md）。
+默认测试 551 passed / 0 failed（含新增 tests/pal/test_round6_remediation.py 十项证据）。
+
+| 任务 | 状态 | 验收证据 |
+|---|---|---|
+| R6-01 冻结样本跨环境可复现 | 完成 | write_bar_jsonl 固定 LF+UTF-8+sort_keys 二进制写；.gitattributes(*.jsonl binary)；Git 对象字节与 manifest 逐文件一致（test_e1） |
+| R6-02 wheel 含新包 | 完成 | packages 补 pal.runtime/pal.oms；独立 venv 仓库外 backtest/scan/paper/reconcile 冒烟通过（test_e3） |
+| R6-03 原子提交事务 | 完成 | EventStore.append_atomic 单次 fsync 批提交+批内互斥预检；on_bar 快照回滚；order/fill 身份由 md5(bar_key) 派生（跨进程稳定）；写失败零半状态+同 bar 重试=无故障运行（test_e4） |
+| R6-04 多批持仓完整恢复 | 完成 | paper 按 fill→lot→plan 逐笔重放；bar_consumed 携带完整 bar 重建历史；armed/setup_removed 进事件流；4800 股反例重启=连续（test_e5）；逐事件重启=连续（test_e7） |
+| R6-05 lot 唯一身份 | 完成 | lot_id 由 fill_id 派生；plan.lot_id+remaining_qty；reduce_by_lot/sell_by_lot；同日两批不再串扣（test_e6） |
+| R6-06 OMS 唯一订单所有者 | 完成 | 买卖单经 oms.submit/apply_fill；构造时 _restore_oms_from_store 恢复订单/占用；主链买单/卖单/重启恢复可追溯（test_e8） |
+| R6-07 统一 Runtime | 完成 | scan/paper 走 TradingRuntime/同内核（scan 无 store 无副作用）；paper --snapshot 与 backtest 同输入决策及经济结果一致 987476.3375（E9 实测）；缺候选时保持显式无交易语义 |
+| R6-08 批次确定性 | 完成 | process_bars 平局裁决 instrument_id（预注册时间优先规则）；输入反转获配不变（test_e10） |
+| R6-09 熔断消费完整 NAV | 完成 | 每根 bar NAV→breaker.on_nav；交易日切换重置日初净值；峰值跟踪真实净值，超限后开仓被 CB_* 阻断、退出不受阻（test_e11） |
+| R6-10 共享容量 | 完成 | bar 级共享可成交预算（买卖两侧、多计划）；低量部分退出 EXIT_PARTIAL_*+计划保留剩余量（test_e12） |
+
+尚未完成（下一轮范围，不据此宣称系统完整）：
+- 真实数据接入、冻结策略规格（assess_with_follow_bars 未接主链）、OOS/防泄漏研究流程（清单第 7 节 1-6 项）；
+- 券商模式 outbox/幂等请求/断线对账（清单第 5 节末段）；
+- tests/integration 53 个外部集成文件仍未纳入默认执行（外部依赖未接入）。
